@@ -1,0 +1,10 @@
+mainSift.cpp -> cudaSift.h   -> cudaImage.h
+		cudaImage.h
+
+cudaImage.cu -> cudaImage.h
+
+cudaSiftH.cu -> cudaImage.h
+                cudaSift.h   -> cudaImage.h
+	        cudaSiftD.h
+                cudaSiftH.h  -> cudaImage.h
+		cudaSiftD.cu
