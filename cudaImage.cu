@@ -54,9 +54,11 @@ CudaImage::~CudaImage()
   
 double CudaImage::Download()  
 {
+  printf("pitch=%d\n", pitch);
   TimerGPU timer(0);
+  int p = sizeof(float)*pitch;
   if (d_data!=NULL && h_data!=NULL) 
-    safeCall(cudaMemcpy(d_data, h_data, sizeof(float)*pitch*height, cudaMemcpyHostToDevice));
+    safeCall(cudaMemcpy2D(d_data, p, h_data, sizeof(float)*width, sizeof(float)*width, height, cudaMemcpyHostToDevice));
   double gpuTime = timer.read();
 #ifdef VERBOSE
   printf("Download time =               %.2f ms\n", gpuTime);
@@ -68,7 +70,7 @@ double CudaImage::Readback()
 {
   TimerGPU timer(0);
   int p = sizeof(float)*pitch;
-  safeCall(cudaMemcpy2D(h_data, p, d_data, p, sizeof(float)*width, height, cudaMemcpyDeviceToHost));
+  safeCall(cudaMemcpy2D(h_data, sizeof(float)*width, d_data, p, sizeof(float)*width, height, cudaMemcpyDeviceToHost));
   double gpuTime = timer.read();
 #ifdef VERBOSE
   printf("Readback time =               %.2f ms\n", gpuTime);
