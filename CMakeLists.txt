@@ -27,7 +27,7 @@ if (UNIX)
     list(APPEND CUDA_NVCC_FLAGS "-arch=sm_20;--compiler-options;-O2;-DVERBOSE") 
   else()
     set(EXTRA_CXX_FLAGS "-DVERBOSE -msse2 -std=c++0x ")
-    list(APPEND CUDA_NVCC_FLAGS "-arch=sm_20;--compiler-bindir=/usr/bin/gcc-4.4;--compiler-options;-O2;-DVERBOSE") 
+    list(APPEND CUDA_NVCC_FLAGS "-arch=sm_20;--compiler-options;-O2;-DVERBOSE") 
   endif()
 endif()
 
