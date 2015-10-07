@@ -48,12 +48,14 @@ int main(int argc, char **argv)
   SiftData siftData1, siftData2;
   float initBlur = 0.0f;
   float thresh = 5.0f;
-  InitSiftData(siftData1, 2048, true, true); 
-  InitSiftData(siftData2, 2048, true, true);
+  InitSiftData(siftData1, 4096, false, true); 
+  InitSiftData(siftData2, 4096, false, true);
   ExtractSift(siftData1, img1, 5, initBlur, thresh, 0.0f);
   ExtractSift(siftData2, img2, 5, initBlur, thresh, 0.0f);
 
   // Match Sift features and find a homography
+  std::cout << "Number of original features: " <<  siftData1.numPts << " " << siftData2.numPts << std::endl;
+#if 1
   MatchSiftData(siftData1, siftData2);
   float homography[9];
   int numMatches;
@@ -66,9 +68,9 @@ int main(int argc, char **argv)
   PrintSiftData(siftData1);
   MatchAll(siftData1, siftData2, homography);
 #endif
-  std::cout << "Number of original features: " <<  siftData1.numPts << " " << siftData2.numPts << std::endl;
   std::cout << "Number of matching features: " << numFit << " " << numMatches << " " << 100.0f*numMatches/std::min(siftData1.numPts, siftData2.numPts) << "%" << std::endl;
   cv::imwrite("data/limg_pts.pgm", limg);
+#endif
 
   // Free Sift data from device
   FreeSiftData(siftData1);
@@ -77,8 +79,13 @@ int main(int argc, char **argv)
 
 void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography)
 {
+#if 0
   SiftPoint *sift1 = siftData1.h_data;
   SiftPoint *sift2 = siftData2.h_data;
+#else
+  SiftPoint *sift1 = siftData1.m_data;
+  SiftPoint *sift2 = siftData2.m_data;
+#endif
   int numPts1 = siftData1.numPts;
   int numPts2 = siftData2.numPts;
   int numFound = 0;
@@ -119,8 +126,13 @@ void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography)
 void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img)
 {
   int numPts = siftData1.numPts;
+#if 0
   SiftPoint *sift1 = siftData1.h_data;
   SiftPoint *sift2 = siftData2.h_data;
+#else
+  SiftPoint *sift1 = siftData1.m_data;
+  SiftPoint *sift2 = siftData2.m_data;
+#endif
   float *h_img = img.h_data;
   int w = img.width;
   int h = img.height;

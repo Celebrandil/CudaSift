@@ -18,15 +18,17 @@
 #define SUBTRACTM_W    32
 #define SUBTRACTM_H     1
 
-#define SCALEDOWN_W   160
+#define SCALEDOWN_W   160 
 #define SCALEDOWN_H    16
 
-#define MINMAX_W      126 // 126
+#define MINMAX_W      126 // +2
 #define MINMAX_S       64
-#define MINMAX_H        8
+#define MINMAX_H        4
 #define NUMDESCBUFS     4
-
-
+ 
+#define LAPLACE_W      56 // +8
+#define LAPLACE_S  (NUM_SCALES+3)
+ 
 __device__ __constant__ float d_Kernel[12*16]; // NOTE: Maximum radius 
 
 ///////////////////////////////////////////////////////////////////////////////

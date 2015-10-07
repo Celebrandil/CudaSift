@@ -291,9 +291,13 @@ double FindHomography(SiftData &data, float *homography, int *numMatches, int nu
   homography[0] = homography[4] = homography[8] = 1.0f;
   homography[1] = homography[2] = homography[3] = 0.0f;
   homography[5] = homography[6] = homography[7] = 0.0f;
+#if 0
   if (data.d_data==NULL)
     return 0.0f;
   SiftPoint *d_sift = data.d_data;
+#else
+  SiftPoint *d_sift = data.m_data;
+#endif
   TimerGPU timer(0);
   numLoops = iDivUp(numLoops,16)*16;
   int numPts = data.numPts;
@@ -341,12 +345,12 @@ double FindHomography(SiftData &data, float *homography, int *numMatches, int nu
     safeCall(cudaMemcpy2D(&d_coord[2*numPtsUp], szFl, &d_sift[0].match_xpos, szPt, szFl, numPts, cudaMemcpyDeviceToDevice));
     safeCall(cudaMemcpy2D(&d_coord[3*numPtsUp], szFl, &d_sift[0].match_ypos, szPt, szFl, numPts, cudaMemcpyDeviceToDevice));
     ComputeHomographies<<<numLoops/16, 16>>>(d_coord, d_randPts, d_homo, numPtsUp);
-    safeCall(cudaThreadSynchronize());
+    //safeCall(cudaThreadSynchronize());
     checkMsg("ComputeHomographies() execution failed\n");
     dim3 blocks(1, numLoops/TESTHOMO_LOOPS);
     dim3 threads(TESTHOMO_TESTS, TESTHOMO_LOOPS);
     TestHomographies<<<blocks, threads>>>(d_coord, d_homo, d_randPts, numPtsUp, thresh*thresh);
-    safeCall(cudaThreadSynchronize());
+    //safeCall(cudaThreadSynchronize());
     checkMsg("TestHomographies() execution failed\n");
     safeCall(cudaMemcpy(h_randPts, d_randPts, sizeof(int)*numLoops, cudaMemcpyDeviceToHost));
     int maxIndex = -1, maxCount = -1;
@@ -372,13 +376,20 @@ double FindHomography(SiftData &data, float *homography, int *numMatches, int nu
 
 double MatchSiftData(SiftData &data1, SiftData &data2)
 {
+#if 0
   if (data1.d_data==NULL || data2.d_data==NULL)
     return 0.0f;
+#endif
   TimerGPU timer(0);
   int numPts1 = data1.numPts;
   int numPts2 = data2.numPts;
+#if 0
   SiftPoint *sift1 = data1.d_data;
   SiftPoint *sift2 = data2.d_data;
+#else
+  SiftPoint *sift1 = data1.m_data;
+  SiftPoint *sift2 = data2.m_data;
+#endif
   
   float *d_corrData; 
   int corrWidth = iDivUp(numPts2, 16)*16;
@@ -387,18 +398,20 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
   dim3 blocks(numPts1, iDivUp(numPts2, 16));
   dim3 threads(16, 16); // each block: 1 points x 16 points
   MatchSiftPoints<<<blocks, threads>>>(sift1, sift2, d_corrData, numPts1, numPts2);
-  safeCall(cudaThreadSynchronize());
+  //safeCall(cudaThreadSynchronize());
   dim3 blocksMax(iDivUp(numPts1, 16));
   dim3 threadsMax(16, 16);
   FindMaxCorr<<<blocksMax, threadsMax>>>(d_corrData, sift1, sift2, numPts1, corrWidth, sizeof(SiftPoint));
-  safeCall(cudaThreadSynchronize());
+  //safeCall(cudaThreadSynchronize());
   checkMsg("MatchSiftPoints() execution failed\n");
   safeCall(cudaFree(d_corrData));
+#if 0
   if (data1.h_data!=NULL) {
     float *h_ptr = &data1.h_data[0].score;
     float *d_ptr = &data1.d_data[0].score;
     safeCall(cudaMemcpy2D(h_ptr, sizeof(SiftPoint), d_ptr, sizeof(SiftPoint), 5*sizeof(float), data1.numPts, cudaMemcpyDeviceToHost));
   }
+#endif
 
   double gpuTime = timer.read();
 #ifdef VERBOSE

@@ -8,18 +8,21 @@
 // CUDA SIFT extractor by Marten Bjorkman aka Celebrandil //
 //********************************************************//  
 
-void ExtractSiftOctave(SiftData &siftData, CudaImage &img, double initBlur, float thresh, float lowestScale, float subsampling);
+void ExtractSiftLoop(SiftData &siftData, CudaImage &img, int numOctaves, double initBlur, float thresh, float lowestScale, float subsampling, float *memoryTmp, float *memorySub);
+void ExtractSiftOctave(SiftData &siftData, CudaImage &img, double initBlur, float thresh, float lowestScale, float subsampling, float *memoryTmp);
 double ScaleDown(CudaImage &res, CudaImage &src, float variance);
 double Subtract(CudaImage &res, CudaImage &srcA, CudaImage &srcB);
 double FindPoints(CudaImage &data1, CudaImage &data2, CudaImage &data3, CudaImage &sift, float thresh, int maxPts, float edgeLimit, float scale, float factor);
-double ComputeOrientations(CudaImage &img, CudaImage &sift, int numPts, int maxPts);
+double ComputeOrientations(CudaImage &img, SiftData &siftData, int fstPts, int totPts);
 double SecondOrientations(CudaImage &sift, int *initNumPts, int maxPts);
-double ExtractSiftDescriptors(CudaImage &img, CudaImage &sift, CudaImage &desc, int numPts, int maxPts);
+double ExtractSiftDescriptors(CudaImage &img, SiftData &siftData, int fstPts, int totPts, float subsampling);
 double AddSiftData(SiftData &data, float *d_sift, float *d_desc, int numPts, int maxPts, float subsampling);
 
 double LowPassMulti(CudaImage *results, CudaImage &origImg, CudaImage *tempImg, float baseBlur, float diffScale, float initBlur);
 double SubtractMulti(CudaImage *results, CudaImage *sources);
-double FindPointsMulti(CudaImage *sources, CudaImage &sift, float thresh, int maxPts, float edgeLimit, float scale, float factor, float lowestScale);
+double LaplaceMulti(CudaImage *results, CudaImage &origImg, float baseBlur, float diffScale, float initBlur);
+double FindPointsMulti(CudaImage *sources, SiftData &siftData, float thresh, float edgeLimit, float scale, float factor, float lowestScale);
+
 
 ////////////////////////////////////////////////////////////////////
 // Templated filter funtions

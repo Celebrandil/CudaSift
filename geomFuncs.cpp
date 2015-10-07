@@ -5,11 +5,15 @@
 
 int ImproveHomography(SiftData &data, float *homography, int numLoops, float minScore, float maxAmbiguity, float thresh)
 {
+#if 0
   if (data.h_data==NULL)
     return 0;
+  SiftPoint *mpts = data.h_data;
+#else
+  SiftPoint *mpts = data.m_data;
+#endif
   float limit = thresh*thresh;
   int numPts = data.numPts;
-  SiftPoint *mpts = data.h_data;
   cv::Mat M(8, 8, CV_64FC1);
   cv::Mat A(8, 1, CV_64FC1), X(8, 1, CV_64FC1);
   double Y[8];
