@@ -54,7 +54,6 @@ CudaImage::~CudaImage()
   
 double CudaImage::Download()  
 {
-  printf("pitch=%d\n", pitch);
   TimerGPU timer(0);
   int p = sizeof(float)*pitch;
   if (d_data!=NULL && h_data!=NULL) 

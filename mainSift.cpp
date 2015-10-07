@@ -25,8 +25,8 @@ int main(int argc, char **argv)
 {     
   // Read images using OpenCV
   cv::Mat limg, rimg;
-  cv::imread("data/left.pgm", 0).convertTo(limg, CV_32FC1);
-  cv::imread("data/righ.pgm", 0).convertTo(rimg, CV_32FC1);
+  cv::imread("data/img1.png", 0).convertTo(limg, CV_32FC1);
+  cv::imread("data/img2.png", 0).convertTo(rimg, CV_32FC1);
   unsigned int w = limg.cols;
   unsigned int h = limg.rows;
   std::cout << "Image size = (" << w << "," << h << ")" << std::endl;
@@ -47,7 +47,7 @@ int main(int argc, char **argv)
   // Extract Sift features from images
   SiftData siftData1, siftData2;
   float initBlur = 0.0f;
-  float thresh = 5.0f;
+  float thresh = 4.5f;
   InitSiftData(siftData1, 4096, false, true); 
   InitSiftData(siftData2, 4096, false, true);
   ExtractSift(siftData1, img1, 5, initBlur, thresh, 0.0f);
