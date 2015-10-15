@@ -1,6 +1,6 @@
 //********************************************************//
 // CUDA SIFT extractor by Marten Björkman aka Celebrandil //
-//              celle @ nada.kth.se                       //
+//              celle @ csc.kth.se                       //
 //********************************************************//  
 
 #include <iostream>  
@@ -14,7 +14,6 @@
 #include "cudaSift.h"
 
 int ImproveHomography(SiftData &data, float *homography, int numLoops, float minScore, float maxAmbiguity, float thresh);
-double ComputeSingular(CudaImage *img, CudaImage *svd);
 void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img);
 void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography);
 
@@ -25,8 +24,8 @@ int main(int argc, char **argv)
 {     
   // Read images using OpenCV
   cv::Mat limg, rimg;
-  cv::imread("data/img1.png", 0).convertTo(limg, CV_32FC1);
-  cv::imread("data/img2.png", 0).convertTo(rimg, CV_32FC1);
+  cv::imread("data/left.pgm", 0).convertTo(limg, CV_32FC1);
+  cv::imread("data/righ.pgm", 0).convertTo(rimg, CV_32FC1);
   unsigned int w = limg.cols;
   unsigned int h = limg.rows;
   std::cout << "Image size = (" << w << "," << h << ")" << std::endl;
@@ -47,20 +46,18 @@ int main(int argc, char **argv)
   // Extract Sift features from images
   SiftData siftData1, siftData2;
   float initBlur = 0.0f;
-  float thresh = 4.5f;
-  InitSiftData(siftData1, 4096, false, true); 
-  InitSiftData(siftData2, 4096, false, true);
+  float thresh = 5.0f;
+  InitSiftData(siftData1, 2048, true, true); 
+  InitSiftData(siftData2, 2048, true, true);
   ExtractSift(siftData1, img1, 5, initBlur, thresh, 0.0f);
   ExtractSift(siftData2, img2, 5, initBlur, thresh, 0.0f);
 
   // Match Sift features and find a homography
-  std::cout << "Number of original features: " <<  siftData1.numPts << " " << siftData2.numPts << std::endl;
-#if 1
   MatchSiftData(siftData1, siftData2);
   float homography[9];
   int numMatches;
   FindHomography(siftData1, homography, &numMatches, 10000, 0.50f, 1.00f, 5.0);
-  int numFit = ImproveHomography(siftData1, homography, 3, 0.80f, 0.95f, 3.0);
+  int numFit = ImproveHomography(siftData1, homography, 0, 0.80f, 0.95f, 3.0);
 
   // Print out and store summary data
   PrintMatchData(siftData1, siftData2, img1);
@@ -68,9 +65,9 @@ int main(int argc, char **argv)
   PrintSiftData(siftData1);
   MatchAll(siftData1, siftData2, homography);
 #endif
+  std::cout << "Number of original features: " <<  siftData1.numPts << " " << siftData2.numPts << std::endl;
   std::cout << "Number of matching features: " << numFit << " " << numMatches << " " << 100.0f*numMatches/std::min(siftData1.numPts, siftData2.numPts) << "%" << std::endl;
   cv::imwrite("data/limg_pts.pgm", limg);
-#endif
 
   // Free Sift data from device
   FreeSiftData(siftData1);
@@ -79,12 +76,12 @@ int main(int argc, char **argv)
 
 void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography)
 {
-#if 0
-  SiftPoint *sift1 = siftData1.h_data;
-  SiftPoint *sift2 = siftData2.h_data;
-#else
+#ifdef MANAGEDMEM
   SiftPoint *sift1 = siftData1.m_data;
   SiftPoint *sift2 = siftData2.m_data;
+#else
+  SiftPoint *sift1 = siftData1.h_data;
+  SiftPoint *sift2 = siftData2.h_data;
 #endif
   int numPts1 = siftData1.numPts;
   int numPts2 = siftData2.numPts;
@@ -126,12 +123,12 @@ void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography)
 void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img)
 {
   int numPts = siftData1.numPts;
-#if 0
-  SiftPoint *sift1 = siftData1.h_data;
-  SiftPoint *sift2 = siftData2.h_data;
-#else
+#ifdef MANAGEDMEM
   SiftPoint *sift1 = siftData1.m_data;
   SiftPoint *sift2 = siftData2.m_data;
+#else
+  SiftPoint *sift1 = siftData1.h_data;
+  SiftPoint *sift2 = siftData2.h_data;
 #endif
   float *h_img = img.h_data;
   int w = img.width;
@@ -139,7 +136,7 @@ void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img)
   std::cout << std::setprecision(3);
   for (int j=0;j<numPts;j++) { 
     int k = sift1[j].match;
-    if (sift1[j].match_error<10) {
+    if (sift1[j].match_error<5) {
       float dx = sift2[k].xpos - sift1[j].xpos;
       float dy = sift2[k].ypos - sift1[j].ypos;
 #if 0

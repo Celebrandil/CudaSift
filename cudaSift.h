@@ -23,9 +23,12 @@ typedef struct {
 typedef struct {
   int numPts;         // Number of available Sift points
   int maxPts;         // Number of allocated Sift points
-  //SiftPoint *h_data;  // Host (CPU) data
-  //SiftPoint *d_data;  // Device (GPU) data
+#ifdef MANAGEDMEM
   SiftPoint *m_data;    // Managed data
+#else
+  SiftPoint *h_data;  // Host (CPU) data
+  SiftPoint *d_data;  // Device (GPU) data
+#endif
 } SiftData;
 
 void InitCuda();

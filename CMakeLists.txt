@@ -34,10 +34,9 @@ endif()
 set(cuda_sources
   cudaImage.cu  
   cudaImage.h  
-  cudaSiftH4.cu 
+  cudaSiftH.cu 
   cudaSiftH.h  
   matching.cu  
-  singular.cu
   cudaSiftD.h  
   cudaSift.h  
   cudautils.h
