@@ -379,6 +379,8 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
   TimerGPU timer(0);
   int numPts1 = data1.numPts;
   int numPts2 = data2.numPts;
+  if (!numPts1 || !numPts2) 
+    return 0.0;
 #ifdef MANAGEDMEM
   SiftPoint *sift1 = data1.m_data;
   SiftPoint *sift2 = data2.m_data;
