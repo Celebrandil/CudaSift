@@ -151,7 +151,7 @@ __global__ void ExtractSiftDescriptors(float *g_Data, SiftPoint *d_sift, int fst
       atomicAdd(buffer + p1, iangf*grad2);
       atomicAdd(buffer + p2,  angf*grad2);
     }
-    if (ty<=14) {  // Lower left
+    if (ty<=13) {  // Lower left
       float grad2 = verf*grad1;
       atomicAdd(buffer + p1+32, iangf*grad2); 
       atomicAdd(buffer + p2+32,  angf*grad2);
@@ -164,7 +164,7 @@ __global__ void ExtractSiftDescriptors(float *g_Data, SiftPoint *d_sift, int fst
       atomicAdd(buffer + p1+8, iangf*grad2);
       atomicAdd(buffer + p2+8,  angf*grad2);
     }
-    if (ty<=14) {   // Lower right
+    if (ty<=13) {   // Lower right
       float grad2 = verf*grad1;
       atomicAdd(buffer + p1+40, iangf*grad2);
       atomicAdd(buffer + p2+40,  angf*grad2);
