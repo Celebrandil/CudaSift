@@ -11,8 +11,8 @@ M. Björkman, N. Bergström and D. Kragic, "Detecting, segmenting and tracking unk
 
 Computational cost (in milliseconds) on different GPUs:
 
-                          1280x960  1920x1080   GFLOPS  Bandwidth
-Maxwell  Tesla K40           5.5       7.2       4291      288
-Kepler   GeForce GTX 780     6.6       8.1       3977      288
-Fermi    GeForce GTX 570     7.5      11.0       1405      152
-
+                            1280x960  1920x1080   GFLOPS  Bandwidth
+Maxwell  Tesla K40             5.5       7.2       4291      288
+Kepler   GeForce GTX 780       6.6       8.1       3977      288
+Fermi    GeForce GTX 570       7.5      11.0       1405      152
+Maxwell  GeForce GTX 750 Ti   15.0      20.5       1306       88
