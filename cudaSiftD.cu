@@ -104,16 +104,15 @@ __global__ void ExtractSiftDescriptors(float *g_Data, SiftPoint *d_sift, int fst
 {
   __shared__ float gauss[16];
   __shared__ float buffer[128];
-  __shared__ float tsum, isum;
+  __shared__ float sums[128];
 
   const int tx = threadIdx.x; // 0 -> 16
   const int ty = threadIdx.y; // 0 -> 16
   const int idx = ty*16 + tx;
   const int bx = blockIdx.x + fstPts;  // 0 -> numPts
-  if (ty==8)
+  if (ty==0)
     gauss[tx] = exp(-(tx-7.5f)*(tx-7.5f)/128.0f);
-  if (idx<128)
-    buffer[idx] = 0.0f;
+  buffer[idx] = 0.0f;
   __syncthreads();
 
   // Compute angles and gradients
@@ -123,80 +122,91 @@ __global__ void ExtractSiftDescriptors(float *g_Data, SiftPoint *d_sift, int fst
   float scale = 12.0f/16.0f*d_sift[bx].scale;
   float ssina = scale*sina; 
   float scosa = scale*cosa;
-  float xpos = d_sift[bx].xpos + (tx-7.5f)*scosa - (ty-7.5f)*ssina;
-  float ypos = d_sift[bx].ypos + (tx-7.5f)*ssina + (ty-7.5f)*scosa;
-  float dx = tex2D(tex, xpos+cosa, ypos+sina) - tex2D(tex, xpos-cosa, ypos-sina);
-  float dy = tex2D(tex, xpos-sina, ypos+cosa) - tex2D(tex, xpos+sina, ypos-cosa);
-  float grad = gauss[ty]*gauss[tx] * sqrtf(dx*dx + dy*dy);
-  float angf = 4.0f/3.1415f*atan2f(dy, dx) + 4.0f;
 
-  int hori = (tx + 2)/4 - 1;      // Convert from (tx,ty,angle) to bins      
-  float horf = (tx - 1.5f)/4.0f - hori;  
-  float ihorf = 1.0f - horf;           
-  int veri = (ty + 2)/4 - 1;
-  float verf = (ty - 1.5f)/4.0f - veri;
-  float iverf = 1.0f - verf;
-  int angi = angf;
-  int angp = (angi<7 ? angi+1 : 0);
-  angf -= angi;
-  float iangf = 1.0f - angf;
+  for (int y=ty;y<16;y+=8) {
+    float xpos = d_sift[bx].xpos + (tx-7.5f)*scosa - (y-7.5f)*ssina;
+    float ypos = d_sift[bx].ypos + (tx-7.5f)*ssina + (y-7.5f)*scosa;
+    float dx = tex2D(tex, xpos+cosa, ypos+sina) - tex2D(tex, xpos-cosa, ypos-sina);
+    float dy = tex2D(tex, xpos-sina, ypos+cosa) - tex2D(tex, xpos+sina, ypos-cosa);
+    float grad = gauss[y]*gauss[tx] * sqrtf(dx*dx + dy*dy);
+    float angf = 4.0f/3.1415f*atan2f(dy, dx) + 4.0f;
+    
+    int hori = (tx + 2)/4 - 1;      // Convert from (tx,y,angle) to bins      
+    float horf = (tx - 1.5f)/4.0f - hori;  
+    float ihorf = 1.0f - horf;           
+    int veri = (y + 2)/4 - 1;
+    float verf = (y - 1.5f)/4.0f - veri;
+    float iverf = 1.0f - verf;
+    int angi = angf;
+    int angp = (angi<7 ? angi+1 : 0);
+    angf -= angi;
+    float iangf = 1.0f - angf;
+    
+    int hist = 8*(4*veri + hori);   // Each gradient measure is interpolated 
+    int p1 = angi + hist;           // in angles, xpos and ypos -> 8 stores
+    int p2 = angp + hist;
+    if (tx>=2) { 
+      float grad1 = ihorf*grad;
+      if (y>=2) {   // Upper left
+        float grad2 = iverf*grad1;
+	atomicAdd(buffer + p1, iangf*grad2);
+	atomicAdd(buffer + p2,  angf*grad2);
+      }
+      if (y<=13) {  // Lower left
+        float grad2 = verf*grad1;
+	atomicAdd(buffer + p1+32, iangf*grad2); 
+	atomicAdd(buffer + p2+32,  angf*grad2);
+      }
+    }
+    if (tx<=14) { 
+      float grad1 = horf*grad;
+      if (y>=2) {    // Upper right
+        float grad2 = iverf*grad1;
+	atomicAdd(buffer + p1+8, iangf*grad2);
+	atomicAdd(buffer + p2+8,  angf*grad2);
+      }
+      if (y<=13) {   // Lower right
+        float grad2 = verf*grad1;
+	atomicAdd(buffer + p1+40, iangf*grad2);
+	atomicAdd(buffer + p2+40,  angf*grad2);
+      }
+    }
+  }
+  __syncthreads();
 
-  int hist = 8*(4*veri + hori);   // Each gradient measure is interpolated 
-  int p1 = angi + hist;           // in angles, xpos and ypos -> 8 stores
-  int p2 = angp + hist;
-  if (tx>=2) { 
-    float grad1 = ihorf*grad;
-    if (ty>=2) {   // Upper left
-      float grad2 = iverf*grad1;
-      atomicAdd(buffer + p1, iangf*grad2);
-      atomicAdd(buffer + p2,  angf*grad2);
-    }
-    if (ty<=13) {  // Lower left
-      float grad2 = verf*grad1;
-      atomicAdd(buffer + p1+32, iangf*grad2); 
-      atomicAdd(buffer + p2+32,  angf*grad2);
-    }
-  }
-  if (tx<=14) { 
-    float grad1 = horf*grad;
-    if (ty>=2) {    // Upper right
-      float grad2 = iverf*grad1;
-      atomicAdd(buffer + p1+8, iangf*grad2);
-      atomicAdd(buffer + p2+8,  angf*grad2);
-    }
-    if (ty<=13) {   // Lower right
-      float grad2 = verf*grad1;
-      atomicAdd(buffer + p1+40, iangf*grad2);
-      atomicAdd(buffer + p2+40,  angf*grad2);
-    }
-  }
-  __syncthreads();
+  // Normalize twice and suppress peaks first time
+  if (idx<64)
+    sums[idx] = buffer[idx]*buffer[idx] + buffer[idx+64]*buffer[idx+64];
+  __syncthreads();      
+  if (idx<32) sums[idx] = sums[idx] + sums[idx+32];
+  __syncthreads();      
+  if (idx<16) sums[idx] = sums[idx] + sums[idx+16];
+  __syncthreads();      
+  if (idx<8)  sums[idx] = sums[idx] + sums[idx+8];
+  __syncthreads();      
+  if (idx<4)  sums[idx] = sums[idx] + sums[idx+4];
+  __syncthreads();      
+  float tsum1 = sums[0] + sums[1] + sums[2] + sums[3]; 
+  buffer[idx] = buffer[idx] * rsqrtf(tsum1);
 
-  if (idx==0)                       // Normalize twice and suppress 
-    tsum = 0.0f;                    // peaks first time
+  if (buffer[idx]>0.2f)
+    buffer[idx] = 0.2f;
   __syncthreads();
-  if (idx<128) 
-    atomicAdd(&tsum, buffer[idx]*buffer[idx]);
-  __syncthreads();
-  if (idx==0) {    // Normalize first time
-    isum = 1.0f / sqrt(tsum);
-    tsum = 0.0f;
-  }
-  __syncthreads();
-  if (idx<128) {
-    buffer[idx] = isum*buffer[idx];
-    if (buffer[idx]>0.2f)
-      buffer[idx] = 0.2f;
-    atomicAdd(&tsum, buffer[idx]*buffer[idx]);
-  }
-  __syncthreads();
-  if (idx==0)      // Normalize second time
-    isum = 1.0f / sqrt(tsum);
-  __syncthreads();
+  if (idx<64)
+    sums[idx] = buffer[idx]*buffer[idx] + buffer[idx+64]*buffer[idx+64];
+  __syncthreads();      
+  if (idx<32) sums[idx] = sums[idx] + sums[idx+32];
+  __syncthreads();      
+  if (idx<16) sums[idx] = sums[idx] + sums[idx+16];
+  __syncthreads();      
+  if (idx<8)  sums[idx] = sums[idx] + sums[idx+8];
+  __syncthreads();      
+  if (idx<4)  sums[idx] = sums[idx] + sums[idx+4];
+  __syncthreads();      
+  float tsum2 = sums[0] + sums[1] + sums[2] + sums[3]; 
 
   float *desc = d_sift[bx].data;
-  if (idx<128)
-    desc[idx] = isum*buffer[idx];
+  desc[idx] = buffer[idx] * rsqrtf(tsum2);
   if (idx==0) {
     d_sift[bx].xpos *= subsampling;
     d_sift[bx].ypos *= subsampling;
