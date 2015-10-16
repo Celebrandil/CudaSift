@@ -9,14 +9,15 @@ The code is free to use for non-commercial applications. If you use the code for
 M. Björkman, N. Bergström and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014.
 
 
-Computational cost (in milliseconds) on different GPUs:
+Computational cost (in milliseconds) on different GPUs (latest benchmark marked with *):
 
                             1280x960  1920x1080   GFLOPS  Bandwidth
 Maxwell  GeForce GTX 970       6.3       7.3*      3494      196
 Maxwell  GeForce GTX 750 Ti   13.0      17.7       1306       88
 Kepler   Tesla K40             5.2       6.4*      4291      288 
-Kepler   GeForce GTX TITAN     4.6       6.1       4500      288
+Kepler   GeForce GTX TITAN     4.6       5.8*      4500      288
 Kepler   GeForce GTX 780       5.3       6.7       3977      288
 Fermi    GeForce GTX 570       7.4      10.5*      1405      152
 
 Obviously, there is room for more improvements given how well GTX 570 performs.
+ 
