@@ -13,7 +13,7 @@ Computational cost (in milliseconds) on different GPUs (latest benchmark marked 
 
                             1280x960  1920x1080   GFLOPS  Bandwidth
 Maxwell  GeForce GTX 970       6.3       7.3*      3494      196
-Maxwell  GeForce GTX 750 Ti   13.0      17.7       1306       88
+Maxwell  GeForce GTX 750 Ti   13.0      15.1*      1306       88
 Kepler   Tesla K40             5.2       6.4*      4291      288 
 Kepler   GeForce GTX TITAN     4.6       5.8*      4500      288
 Kepler   GeForce GTX 780       5.3       6.7       3977      288
