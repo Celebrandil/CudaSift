@@ -56,8 +56,8 @@ void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double init
     safeCall(cudaMemcpy(siftData.h_data, siftData.d_data, sizeof(SiftPoint)*siftData.numPts, cudaMemcpyDeviceToHost));
 #endif
   double totTime = timer.read();
-#ifdef VERBOSE
-  printf("Total time incl memory =      %.2f ms\n\n", totTime);
+#ifndef VERBOSE
+  printf("Total time incl memory =      %.2f ms\n", totTime);
 #endif
 }
 
@@ -249,7 +249,7 @@ double ComputeOrientations(CudaImage &img, SiftData &siftData, int fstPts, int t
 double ExtractSiftDescriptors(CudaImage &img, SiftData &siftData, int fstPts, int totPts, float subsampling)
 {
   dim3 blocks(totPts - fstPts); 
-  dim3 threads(16, 16);
+  dim3 threads(16, 8);
 #ifdef MANAGEDMEM
   ExtractSiftDescriptors<<<blocks, threads>>>(img.d_data, siftData.m_data, fstPts, subsampling);
 #else
