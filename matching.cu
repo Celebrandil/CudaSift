@@ -13,7 +13,7 @@ __global__ void MatchSiftPoints(SiftPoint *sift1, SiftPoint *sift2, float *corrD
   const int p2 = blockIdx.y*16 + ty;
   const float *ptr1 = sift1[p1].data;
   const float *ptr2 = sift2[p2].data;
-  const int i = ty*16 + tx;
+  const int i = 16*ty + tx;
   if (ty<8)
     siftPoint[i] = ptr1[i];
   __syncthreads();
@@ -29,19 +29,39 @@ __global__ void MatchSiftPoints(SiftPoint *sift1, SiftPoint *sift2, float *corrD
   if (tx<4)
     sums[i] += sums[i+4];
   __syncthreads();
-  if (tx<2)
-    sums[i] += sums[i+2];
-  __syncthreads();
-  if (tx<1)
-    sums[i] += sums[i+1];
-  __syncthreads();
   if (ty==0) {
-    corrData[p1*gridDim.y*16 + blockIdx.y*16 + tx] = sums[16*tx];
-    //printf("corr = %.2f\n", sums[16*tx]);
+    sum = sums[16*tx+0] + sums[16*tx+1] + sums[16*tx+2] + sums[16*tx+3];
+    corrData[p1*gridDim.y*16 + blockIdx.y*16 + tx] = sum;
   }
   __syncthreads();
 }
 
+
+__global__ void MatchSiftPoints2(SiftPoint *sift1, SiftPoint *sift2, float *corrData, int numPts1, int numPts2)
+{
+  __shared__ float siftPoints1[16*128];
+  __shared__ float siftPoints2[16*128];
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
+  const float *ptr1 = sift1[min(numPts1-1,blockIdx.x*16 + ty)].data;
+  const float *ptr2 = sift2[min(numPts2-1,blockIdx.y*16 + ty)].data;
+  for (int i=0;i<8;i++) {
+    siftPoints1[128*ty+16*i+tx] = ptr1[16*i+tx];
+    siftPoints2[128*ty+16*i+tx] = ptr2[16*i+tx];
+  }
+  __syncthreads();
+  const int p1 = blockIdx.x*16 + ty;
+  const int p2 = blockIdx.y*16 + tx;
+  const float *pt1 = &siftPoints1[ty*128];
+  const float *pt2 = &siftPoints2[tx*128];
+  float sum = 0.0f;
+  for (int i=0;i<128;i++) {
+    int itx = (i + tx)&127; // avoid bank conflicts
+    sum += pt1[itx]*pt2[itx];
+  }
+  if (p1<numPts1)
+    corrData[p1*gridDim.y*16 + p2] = (p2<numPts2 ? sum : -1.0f);
+}
 
 __global__ void FindMaxCorr(float *corrData, SiftPoint *sift1, SiftPoint *sift2, int numPts1, int corrWidth, int siftSize)
 {
@@ -395,9 +415,15 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
   int corrWidth = iDivUp(numPts2, 16)*16;
   int corrSize = sizeof(float)*numPts1*corrWidth;
   safeCall(cudaMalloc((void **)&d_corrData, corrSize));
-  dim3 blocks(numPts1, iDivUp(numPts2, 16));
+#if 0
+  dim3 blocks1(numPts1, iDivUp(numPts2, 16));
+  dim3 threads1(16, 16); // each block: 1 points x 16 points
+  MatchSiftPoints<<<blocks1, threads1>>>(sift1, sift2, d_corrData, numPts1, numPts2);
+#else
+  dim3 blocks(iDivUp(numPts1,16), iDivUp(numPts2, 16));
   dim3 threads(16, 16); // each block: 1 points x 16 points
-  MatchSiftPoints<<<blocks, threads>>>(sift1, sift2, d_corrData, numPts1, numPts2);
+  MatchSiftPoints2<<<blocks, threads>>>(sift1, sift2, d_corrData, numPts1, numPts2);
+#endif
   safeCall(cudaThreadSynchronize());
   dim3 blocksMax(iDivUp(numPts1, 16));
   dim3 threadsMax(16, 16);
