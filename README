@@ -1,6 +1,6 @@
 This is the fourth version of a SIFT (Scale Invariant Feature Transform) implementation using CUDA for GPUs from NVidia. The first version is from 2007 and GPUs have evolved since then. This version is slightly more precise and considerably faster than the previous versions and has been optimized for Tesla K40 using larger images.
 
-On a Tesla K40 GPU the code takes about 5.2 ms on a 1280x960 pixel image and 6.7 ms on a 1920x1080 pixel image, while the third version required respectively 11.2 ms and 14.5 ms. An additional 1.5 ms and 1.0 ms is needed for image transfers from CPU to GPU. There is also code for brute-force matching of features and homography computation that takes about 5 ms and 3 ms for two sets of around 1250 SIFT features each.
+On a Tesla K40 GPU the code takes about 5.2 ms on a 1280x960 pixel image and 6.4 ms on a 1920x1080 pixel image, while the third version required respectively 11.2 ms and 14.5 ms. An additional 1.5 ms and 1.0 ms is needed for image transfers from CPU to GPU. There is also code for brute-force matching of features and homography computation that takes about 5 ms and 3 ms for two sets of around 1250 SIFT features each.
 
 The code relies on CMake for compilation and OpenCV for image containers. OpenCV can however be quite easily changed to something else. The code can be relatively hard to read, given the way things have been parallelized for maximum speed.
 
@@ -9,14 +9,15 @@ The code is free to use for non-commercial applications. If you use the code for
 M. Björkman, N. Bergström and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014.
 
 
-Computational cost (in milliseconds) on different GPUs:
+Computational cost (in milliseconds) on different GPUs (latest benchmark marked with *):
 
                             1280x960  1920x1080   GFLOPS  Bandwidth
-Maxwell  GeForce GTX 970       6.3       8.4       3494      196
-Maxwell  GeForce GTX 750 Ti   13.0      17.7       1306       88
-Kepler   Tesla K40             5.2       6.7       4291      288 
-Kepler   GeForce GTX TITAN     4.6       6.1       4500      288
+Maxwell  GeForce GTX 970       6.3       7.3*      3494      196
+Maxwell  GeForce GTX 750 Ti   13.0      15.1*      1306       88
+Kepler   Tesla K40             5.2       6.4*      4291      288 
+Kepler   GeForce GTX TITAN     4.6       5.8*      4500      288
 Kepler   GeForce GTX 780       5.3       6.7       3977      288
-Fermi    GeForce GTX 570       7.4      11.0       1405      152
+Fermi    GeForce GTX 570       7.4      10.5*      1405      152
 
 Obviously, there is room for more improvements given how well GTX 570 performs.
+ 
