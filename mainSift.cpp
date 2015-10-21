@@ -21,7 +21,11 @@ void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography);
 // Main program
 ///////////////////////////////////////////////////////////////////////////////
 int main(int argc, char **argv) 
-{     
+{    
+  int devNum = 0;
+  if (argc>1)
+    devNum = std::atoi(argv[1]);
+
   // Read images using OpenCV
   cv::Mat limg, rimg;
   cv::imread("data/img1.png", 0).convertTo(limg, CV_32FC1);
@@ -36,7 +40,7 @@ int main(int argc, char **argv)
         
   // Initial Cuda images and download images to device
   std::cout << "Initializing data..." << std::endl;
-  InitCuda(0);
+  InitCuda(devNum);
   CudaImage img1, img2;
   img1.Allocate(w, h, iAlignUp(w, 128), false, NULL, (float*)limg.data);
   img2.Allocate(w, h, iAlignUp(w, 128), false, NULL, (float*)rimg.data);
