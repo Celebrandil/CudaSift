@@ -26,12 +26,13 @@ if (UNIX)
     set(EXTRA_CXX_FLAGS "-DVERBOSE -msse2")
     list(APPEND CUDA_NVCC_FLAGS "-arch=sm_35;--compiler-options;-O2;-DVERBOSE") 
   else()
-    set(EXTRA_CXX_FLAGS "-DVERBOSE -msse2 -std=c++0x ")
-    list(APPEND CUDA_NVCC_FLAGS "-arch=sm_35;--compiler-options;-O2;-DVERBOSE") 
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -msse2 ")
+    list(APPEND CUDA_NVCC_FLAGS "-lineinfo;--compiler-options;-O2") 
   endif()
 endif()
 
 set(cuda_sources
+  scaledown.cu
   cudaImage.cu  
   cudaImage.h  
   cudaSiftH.cu 
@@ -51,16 +52,18 @@ include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR} 
 )
 
-cuda_add_executable(cudasift ${cuda_sources} ${sources})
+SET(CUDA_SEPARABLE_COMPILATION ON)
+
+cuda_add_executable(cudasift ${cuda_sources} ${sources} OPTIONS -arch=sm_35)
 
 set_target_properties(cudasift PROPERTIES
   COMPILE_FLAGS "${EXTRA_CXX_FLAGS}"			   
 )
 
 target_link_libraries(cudasift
-  ${OpenCV_LIBS}
+  /usr/local/cuda/lib64/libcudadevrt.a ${OpenCV_LIBS} 
 )
-
+ 
 install(FILES 
   ${cuda_sources} 
   ${sources}

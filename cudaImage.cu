@@ -34,7 +34,7 @@ void CudaImage::Allocate(int w, int h, int p, bool host, float *devmem, float *h
 }
 
 CudaImage::CudaImage() : 
-  d_data(NULL), h_data(NULL), t_data(NULL), d_internalAlloc(false), h_internalAlloc(false)
+  width(0), height(0), d_data(NULL), h_data(NULL), t_data(NULL), d_internalAlloc(false), h_internalAlloc(false)
 {
 
 }

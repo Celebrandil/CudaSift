@@ -18,8 +18,6 @@ __constant__ int d_MaxNumPoints;
 __device__ unsigned int d_PointCounter[1];
 __device__ __constant__ float d_Kernel[12*16]; // NOTE: Maximum radius 
 
-texture<float, 2, cudaReadModeElementType> tex;
-
 ///////////////////////////////////////////////////////////////////////////////
 // Lowpass filter an subsample image
 ///////////////////////////////////////////////////////////////////////////////
@@ -100,7 +98,7 @@ __global__ void ScaleDown(float *d_Result, float *d_Data, int width, int pitch, 
 }
 
 
-__global__ void ExtractSiftDescriptors(float *g_Data, SiftPoint *d_sift, int fstPts, float subsampling)
+__global__ void ExtractSiftDescriptors(cudaTextureObject_t texObj, float *g_Data, SiftPoint *d_sift, int fstPts, float subsampling)
 {
   __shared__ float gauss[16];
   __shared__ float buffer[128];
@@ -126,8 +124,10 @@ __global__ void ExtractSiftDescriptors(float *g_Data, SiftPoint *d_sift, int fst
   for (int y=ty;y<16;y+=8) {
     float xpos = d_sift[bx].xpos + (tx-7.5f)*scosa - (y-7.5f)*ssina;
     float ypos = d_sift[bx].ypos + (tx-7.5f)*ssina + (y-7.5f)*scosa;
-    float dx = tex2D(tex, xpos+cosa, ypos+sina) - tex2D(tex, xpos-cosa, ypos-sina);
-    float dy = tex2D(tex, xpos-sina, ypos+cosa) - tex2D(tex, xpos+sina, ypos-cosa);
+    float dx = tex2D<float>(texObj, xpos+cosa, ypos+sina) - 
+      tex2D<float>(texObj, xpos-cosa, ypos-sina);
+    float dy = tex2D<float>(texObj, xpos-sina, ypos+cosa) - 
+      tex2D<float>(texObj, xpos+sina, ypos-cosa);
     float grad = gauss[y]*gauss[tx] * sqrtf(dx*dx + dy*dy);
     float angf = 4.0f/3.1415f*atan2f(dy, dx) + 4.0f;
     
@@ -215,7 +215,7 @@ __global__ void ExtractSiftDescriptors(float *g_Data, SiftPoint *d_sift, int fst
 }
  
 
-__global__ void ComputeOrientations(float *g_Data, SiftPoint *d_Sift, int fstPts)
+__global__ void ComputeOrientations(cudaTextureObject_t texObj, float *g_Data, SiftPoint *d_Sift, int fstPts)
 {
   __shared__ float hist[64];
   __shared__ float gauss[11];
@@ -234,8 +234,8 @@ __global__ void ComputeOrientations(float *g_Data, SiftPoint *d_Sift, int fstPts
   float xf = xp + xd;
   float yf = yp + yd;
   if (yd<11) {
-    float dx = tex2D(tex, xf+1.0, yf) - tex2D(tex, xf-1.0, yf); 
-    float dy = tex2D(tex, xf, yf+1.0) - tex2D(tex, xf, yf-1.0); 
+    float dx = tex2D<float>(texObj, xf+1.0, yf) - tex2D<float>(texObj, xf-1.0, yf); 
+    float dy = tex2D<float>(texObj, xf, yf+1.0) - tex2D<float>(texObj, xf, yf-1.0); 
     int bin = 16.0f*atan2f(dy, dx)/3.1416f + 16.5f;
     if (bin>31)
       bin = 0;
@@ -418,7 +418,7 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
 }
 
 
- __global__ void LaplaceMulti(float *d_Result, float *d_Data, int width, int pitch, int height)
+ __global__ void LaplaceMulti(cudaTextureObject_t texObj, float *d_Result, float *d_Data, int width, int pitch, int height)
 {
   __shared__ float data1[(LAPLACE_W + 2*LAPLACE_R)*LAPLACE_S];
   __shared__ float data2[LAPLACE_W*LAPLACE_S];
@@ -430,11 +430,11 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
   float *sdata1 = data1 + (LAPLACE_W + 2*LAPLACE_R)*scale; 
   float x = xp-3.5;
   float y = yp+0.5;
-  sdata1[tx] = kernel[4]*tex2D(tex, x, y) + 
-    kernel[3]*(tex2D(tex, x, y-1.0) + tex2D(tex, x, y+1.0)) + 
-    kernel[2]*(tex2D(tex, x, y-2.0) + tex2D(tex, x, y+2.0)) + 
-    kernel[1]*(tex2D(tex, x, y-3.0) + tex2D(tex, x, y+3.0)) + 
-    kernel[0]*(tex2D(tex, x, y-4.0) + tex2D(tex, x, y+4.0));
+  sdata1[tx] = kernel[4]*tex2D<float>(texObj, x, y) + 
+    kernel[3]*(tex2D<float>(texObj, x, y-1.0) + tex2D<float>(texObj, x, y+1.0)) + 
+    kernel[2]*(tex2D<float>(texObj, x, y-2.0) + tex2D<float>(texObj, x, y+2.0)) + 
+    kernel[1]*(tex2D<float>(texObj, x, y-3.0) + tex2D<float>(texObj, x, y+3.0)) + 
+    kernel[0]*(tex2D<float>(texObj, x, y-4.0) + tex2D<float>(texObj, x, y+4.0));
   __syncthreads();
   float *sdata2 = data2 + LAPLACE_W*scale; 
   if (tx<LAPLACE_W) {
