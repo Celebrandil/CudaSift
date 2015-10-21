@@ -32,7 +32,7 @@ if (UNIX)
 endif()
 
 set(cuda_sources
-  scaledown.cu
+  #scaledown.cu
   cudaImage.cu  
   cudaImage.h  
   cudaSiftH.cu 
