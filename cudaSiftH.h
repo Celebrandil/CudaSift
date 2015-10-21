@@ -11,9 +11,9 @@
 void ExtractSiftLoop(SiftData &siftData, CudaImage &img, int numOctaves, double initBlur, float thresh, float lowestScale, float subsampling, float *memoryTmp, float *memorySub);
 void ExtractSiftOctave(SiftData &siftData, CudaImage &img, double initBlur, float thresh, float lowestScale, float subsampling, float *memoryTmp);
 double ScaleDown(CudaImage &res, CudaImage &src, float variance);
-double ComputeOrientations(CudaImage &img, SiftData &siftData, int fstPts, int totPts);
-double ExtractSiftDescriptors(CudaImage &img, SiftData &siftData, int fstPts, int totPts, float subsampling);
-double LaplaceMulti(CudaImage *results, CudaImage &origImg, float baseBlur, float diffScale, float initBlur);
+double ComputeOrientations(cudaTextureObject_t texObj, CudaImage &img, SiftData &siftData, int fstPts, int totPts);
+double ExtractSiftDescriptors(cudaTextureObject_t texObj, CudaImage &img, SiftData &siftData, int fstPts, int totPts, float subsampling);
+double LaplaceMulti(cudaTextureObject_t texObj, CudaImage *results, CudaImage &origImg, float baseBlur, float diffScale, float initBlur);
 double FindPointsMulti(CudaImage *sources, SiftData &siftData, float thresh, float edgeLimit, float scale, float factor, float lowestScale);
 
 #endif
