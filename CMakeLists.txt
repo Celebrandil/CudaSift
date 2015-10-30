@@ -32,7 +32,7 @@ if (UNIX)
 endif()
 
 set(cuda_sources
-  dynamic.cu
+  # dynamic.cu
   cudaImage.cu  
   cudaImage.h  
   cudaSiftH.cu 
