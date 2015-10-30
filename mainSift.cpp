@@ -28,8 +28,8 @@ int main(int argc, char **argv)
 
   // Read images using OpenCV
   cv::Mat limg, rimg;
-  cv::imread("data/img1.png", 0).convertTo(limg, CV_32FC1);
-  cv::imread("data/img2.png", 0).convertTo(rimg, CV_32FC1);
+  cv::imread("data/left.pgm", 0).convertTo(limg, CV_32FC1);
+  cv::imread("data/righ.pgm", 0).convertTo(rimg, CV_32FC1);
   unsigned int w = limg.cols;
   unsigned int h = limg.rows;
   std::cout << "Image size = (" << w << "," << h << ")" << std::endl;
@@ -50,14 +50,14 @@ int main(int argc, char **argv)
   // Extract Sift features from images
   SiftData siftData1, siftData2;
   float initBlur = 0.0f;
-  float thresh = 4.0f;
-  InitSiftData(siftData1, 2*4096, true, true); 
-  InitSiftData(siftData2, 2*4096, true, true);
-  for (int i=0;i<50;i++) {
+  float thresh = 5.0f;
+  InitSiftData(siftData1, 4096, true, true); 
+  InitSiftData(siftData2, 4096, true, true);
+  for (int i=0;i<1;i++) {
     ExtractSift(siftData1, img1, 5, initBlur, thresh, 0.0f);
     ExtractSift(siftData2, img2, 5, initBlur, thresh, 0.0f);
   }
-#if 1
+
   // Match Sift features and find a homography
   for (int i=0;i<1;i++)
     MatchSiftData(siftData1, siftData2);
@@ -75,7 +75,7 @@ int main(int argc, char **argv)
   std::cout << "Number of original features: " <<  siftData1.numPts << " " << siftData2.numPts << std::endl;
   std::cout << "Number of matching features: " << numFit << " " << numMatches << " " << 100.0f*numMatches/std::min(siftData1.numPts, siftData2.numPts) << "%" << std::endl;
   cv::imwrite("data/limg_pts.pgm", limg);
-#endif
+
   // Free Sift data from device
   FreeSiftData(siftData1);
   FreeSiftData(siftData2);
@@ -146,12 +146,15 @@ void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img)
     if (true || sift1[j].match_error<5) {
       float dx = sift2[k].xpos - sift1[j].xpos;
       float dy = sift2[k].ypos - sift1[j].ypos;
-#if 0
-      std::cout << j << ": " << "score=" << sift1[j].score << "  ambiguity=" << sift1[j].ambiguity << "  match=" << k << "  ";
-      std::cout << "error=" << (int)sift1[j].match_error << "  ";
-      std::cout << "orient=" << (int)sift1[j].orientation << "," << (int)sift2[k].orientation << "  ";
-      std::cout << "pos1=(" << (int)sift1[j].xpos << "," << (int)sift1[j].ypos << ")";
-      std::cout << "  delta=(" << (int)dx << "," << (int)dy << ")" << std::endl;
+#if 1
+      if (false && sift1[j].xpos>550 && sift1[j].xpos<600) {
+	std::cout << "pos1=(" << (int)sift1[j].xpos << "," << (int)sift1[j].ypos << ") ";
+	std::cout << j << ": " << "score=" << sift1[j].score << "  ambiguity=" << sift1[j].ambiguity << "  match=" << k << "  ";
+	std::cout << "scale=" << sift1[j].scale << "  ";
+	std::cout << "error=" << (int)sift1[j].match_error << "  ";
+	std::cout << "orient=" << (int)sift1[j].orientation << "," << (int)sift2[k].orientation << "  ";
+	std::cout << " delta=(" << (int)dx << "," << (int)dy << ")" << std::endl;
+      }
 #endif
 #if 1
       int len = (int)(fabs(dx)>fabs(dy) ? fabs(dx) : fabs(dy));

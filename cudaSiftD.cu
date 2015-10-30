@@ -16,7 +16,8 @@ __constant__ float d_EdgeLimit;
 __constant__ int d_MaxNumPoints;
 
 __device__ unsigned int d_PointCounter[1];
-__device__ __constant__ float d_Kernel[12*16]; // NOTE: Maximum radius 
+__constant__ float d_Kernel1[5]; 
+__constant__ float d_Kernel2[12*16]; 
 
 ///////////////////////////////////////////////////////////////////////////////
 // Lowpass filter an subsample image
@@ -37,7 +38,7 @@ __global__ void ScaleDown(float *d_Result, float *d_Data, int width, int pitch, 
   const int xStart = blockIdx.x*SCALEDOWN_W;
   const int yStart = blockIdx.y*SCALEDOWN_H;
   const int xWrite = xStart/2 + tx;
-  const float *k = d_Kernel;
+  const float *k = d_Kernel1;
   if (tx<SCALEDOWN_H+4) {
     int y = yStart + tx - 1;
     y = (y<0 ? 0 : y);
@@ -98,7 +99,7 @@ __global__ void ScaleDown(float *d_Result, float *d_Data, int width, int pitch, 
 }
 
 
-__global__ void ExtractSiftDescriptors(cudaTextureObject_t texObj, float *g_Data, SiftPoint *d_sift, int fstPts, float subsampling)
+__global__ void ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftPoint *d_sift, int fstPts, float subsampling)
 {
   __shared__ float gauss[16];
   __shared__ float buffer[128];
@@ -215,7 +216,7 @@ __global__ void ExtractSiftDescriptors(cudaTextureObject_t texObj, float *g_Data
 }
  
 
-__global__ void ComputeOrientations(cudaTextureObject_t texObj, float *g_Data, SiftPoint *d_Sift, int fstPts)
+__global__ void ComputeOrientations(cudaTextureObject_t texObj, SiftPoint *d_Sift, int fstPts)
 {
   __shared__ float hist[64];
   __shared__ float gauss[11];
@@ -277,7 +278,7 @@ __global__ void ComputeOrientations(cudaTextureObject_t texObj, float *g_Data, S
     float val2 = hist[32+((i1+31)&31)];
     float peak = i1 + 0.5f*(val1-val2) / (2.0f*maxval1-val1-val2);
     d_Sift[bx].orientation = 11.25f*(peak<0.0f ? peak+32.0f : peak);
-    if (maxval2>0.8f*maxval1) {
+    if (maxval2>0.8f*maxval1 && false) {
       float val1 = hist[32+((i2+1)&31)];
       float val2 = hist[32+((i2+31)&31)];
       float peak = i2 + 0.5f*(val1-val2) / (2.0f*maxval2-val1-val2);
@@ -289,6 +290,7 @@ __global__ void ComputeOrientations(cudaTextureObject_t texObj, float *g_Data, S
 	d_Sift[idx].sharpness = d_Sift[bx].sharpness;
 	d_Sift[idx].edgeness = d_Sift[bx].edgeness;
 	d_Sift[idx].orientation = 11.25f*(peak<0.0f ? peak+32.0f : peak);;
+	d_Sift[idx].subsampling = d_Sift[bx].subsampling;
       }
     } 
   }
@@ -298,7 +300,7 @@ __global__ void ComputeOrientations(cudaTextureObject_t texObj, float *g_Data, S
 // Subtract two images (multi-scale version)
 ///////////////////////////////////////////////////////////////////////////////
 
-__global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, int pitch, int height, int nScales)
+ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, int pitch, int height, int nScales, float subsampling)
 {
   #define MEMWID (MINMAX_W + 2)
   __shared__ float ymin1[MEMWID], ymin2[MEMWID], ymin3[MEMWID];
@@ -413,12 +415,13 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
       d_Sift[idx].scale = d_Scales[scale] * exp2f(pds*d_Factor);
       d_Sift[idx].sharpness = val + dval;
       d_Sift[idx].edgeness = edge;
+      d_Sift[idx].subsampling = subsampling;
     }
   }
 }
 
 
- __global__ void LaplaceMulti(cudaTextureObject_t texObj, float *d_Result, float *d_Data, int width, int pitch, int height)
+ __global__ void LaplaceMulti(cudaTextureObject_t texObj, float *d_Result, int width, int pitch, int height)
 {
   __shared__ float data1[(LAPLACE_W + 2*LAPLACE_R)*LAPLACE_S];
   __shared__ float data2[LAPLACE_W*LAPLACE_S];
@@ -426,7 +429,7 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
   const int xp = blockIdx.x*LAPLACE_W + tx;
   const int yp = blockIdx.y;
   const int scale = threadIdx.y;
-  float *kernel = d_Kernel + scale*16;
+  float *kernel = d_Kernel2 + scale*16;
   float *sdata1 = data1 + (LAPLACE_W + 2*LAPLACE_R)*scale; 
   float x = xp-3.5;
   float y = yp+0.5;
