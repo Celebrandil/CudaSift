@@ -1,4 +1,4 @@
-# CudaSift -- SIFT features with CUDA
+# CudaSift - SIFT features with CUDA
 
 This is the fourth version of a SIFT (Scale Invariant Feature Transform) implementation using CUDA for GPUs from NVidia. The first version is from 2007 and GPUs have evolved since then. This version is slightly more precise and considerably faster than the previous versions and has been optimized for Tesla K40 using larger images.
 
@@ -8,10 +8,10 @@ The code relies on CMake for compilation and OpenCV for image containers. OpenCV
 
 The code is free to use for non-commercial applications. If you use the code for research, please refer to the following paper.
 
-M. Björkman, N. Bergström and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014.
+M. Björkman, N. Bergström and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. http://www.sciencedirect.com/science/article/pii/S107731421300194X
 
 
-## Benchmarking:
+## Benchmarking
 
 Computational cost (in milliseconds) on different GPUs (latest benchmark marked with *):
 
