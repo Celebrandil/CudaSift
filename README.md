@@ -15,12 +15,12 @@ M. Björkman, N. Bergström and D. Kragic, "Detecting, segmenting and tracking unk
 
 Computational cost (in milliseconds) on different GPUs (latest benchmark marked with *):
 
-                            1280x960  1920x1080   GFLOPS  Bandwidth  Matching
-Pascal   GeForce GTX 1060      2.6*      3.8*	   3855      192       1.3*
-Maxwell  GeForce GTX 970       5.0       6.5       3494      224       1.6
-Maxwell  GeForce GTX 750 Ti   10.6      14.7       1306       86       3.2
-Kepler   Tesla K40             5.3       6.4       4291      288       2.4
-Kepler   GeForce GTX TITAN     4.6       5.8       4500      288       2.5
+|      |                 | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
+| Pascal  |  GeForce GTX 1060   |   2.6* |     3.8* |	   3855  |    192  |   1.3* |
+| Maxwell |  GeForce GTX 970    |   5.0  |     6.5  |    3494    |  224    |   1.6  |
+| Maxwell | GeForce GTX 750 Ti  | 10.6   |   14.7   |    1306    |   86    |   3.2  |
+| Kepler  | Tesla K40           |  5.3   |    6.4   |    4291    |  288    |   2.4  |
+| Kepler  | GeForce GTX TITAN   |  4.6   |    5.8   |    4500    |  288    |   2.5  |
 
 Matching is done between two sets of 1050 and 1202 features respectively. 
  
