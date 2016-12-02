@@ -424,7 +424,7 @@ __global__ void ComputeOrientations(cudaTextureObject_t texObj, SiftPoint *d_Sif
 }
 
 
- __global__ void LaplaceMulti(cudaTextureObject_t texObj, float *d_Result, int width, int pitch, int height)
+ __global__ void LaplaceMultiTex(cudaTextureObject_t texObj, float *d_Result, int width, int pitch, int height)
 {
   __shared__ float data1[(LAPLACE_W + 2*LAPLACE_R)*LAPLACE_S];
   __shared__ float data2[LAPLACE_W*LAPLACE_S];
@@ -441,6 +441,38 @@ __global__ void ComputeOrientations(cudaTextureObject_t texObj, SiftPoint *d_Sif
     kernel[2]*(tex2D<float>(texObj, x, y-2.0) + tex2D<float>(texObj, x, y+2.0)) + 
     kernel[1]*(tex2D<float>(texObj, x, y-3.0) + tex2D<float>(texObj, x, y+3.0)) + 
     kernel[0]*(tex2D<float>(texObj, x, y-4.0) + tex2D<float>(texObj, x, y+4.0));
+  __syncthreads();
+  float *sdata2 = data2 + LAPLACE_W*scale; 
+  if (tx<LAPLACE_W) {
+    sdata2[tx] = kernel[4]*sdata1[tx+4] + 
+      kernel[3]*(sdata1[tx+3] + sdata1[tx+5]) + 
+      kernel[2]*(sdata1[tx+2] + sdata1[tx+6]) + 
+      kernel[1]*(sdata1[tx+1] + sdata1[tx+7]) + 
+      kernel[0]*(sdata1[tx+0] + sdata1[tx+8]);
+  }
+  __syncthreads(); 
+  if (tx<LAPLACE_W && scale<LAPLACE_S-1 && xp<width) 
+    d_Result[scale*height*pitch + yp*pitch + xp] = sdata2[tx] - sdata2[tx+LAPLACE_W];
+}
+
+
+ __global__ void LaplaceMultiMem(float *d_Image, float *d_Result, int width, int pitch, int height)
+{
+  __shared__ float data1[(LAPLACE_W + 2*LAPLACE_R)*LAPLACE_S];
+  __shared__ float data2[LAPLACE_W*LAPLACE_S];
+  const int tx = threadIdx.x;
+  const int xp = blockIdx.x*LAPLACE_W + tx;
+  const int yp = blockIdx.y;
+  const int scale = threadIdx.y;
+  float *kernel = d_Kernel2 + scale*16;
+  float *sdata1 = data1 + (LAPLACE_W + 2*LAPLACE_R)*scale; 
+  float *data = d_Image + max(min(xp - 4, width-1), 0);
+  int h = height-1;
+  sdata1[tx] = kernel[4]*data[min(yp, h)*pitch] +
+    kernel[3]*(data[max(0, min(yp-1, h))*pitch] + data[min(yp+1, h)*pitch]) + 
+    kernel[2]*(data[max(0, min(yp-2, h))*pitch] + data[min(yp+2, h)*pitch]) + 
+    kernel[1]*(data[max(0, min(yp-3, h))*pitch] + data[min(yp+3, h)*pitch]) + 
+    kernel[0]*(data[max(0, min(yp-4, h))*pitch] + data[min(yp+4, h)*pitch]);
   __syncthreads();
   float *sdata2 = data2 + LAPLACE_W*scale; 
   if (tx<LAPLACE_W) {

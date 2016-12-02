@@ -50,7 +50,7 @@ int main(int argc, char **argv)
   // Extract Sift features from images
   SiftData siftData1, siftData2;
   float initBlur = 0.0f;
-  float thresh = 5.0f;
+  float thresh = 5.0f; //3.66f;
   InitSiftData(siftData1, 4096, true, true); 
   InitSiftData(siftData2, 4096, true, true);
   for (int i=0;i<1;i++) {

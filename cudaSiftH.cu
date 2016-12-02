@@ -139,7 +139,7 @@ void ExtractSiftOctave(SiftData &siftData, CudaImage &img, double initBlur, floa
   TimerGPU timer1;
   float baseBlur = pow(2.0f, -1.0f/NUM_SCALES);
   float diffScale = pow(2.0f, 1.0f/NUM_SCALES);
-  LaplaceMulti(texObj, diffImg, baseBlur, diffScale, initBlur);
+  LaplaceMulti(texObj, img, diffImg, baseBlur, diffScale, initBlur);
   int fstPts = 0;
   safeCall(cudaMemcpyFromSymbol(&fstPts, d_PointCounter, sizeof(int)));
   double sigma = baseBlur*diffScale;
@@ -293,7 +293,7 @@ double ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftData &siftData, in
 
 //==================== Multi-scale functions ===================//
 
-double LaplaceMulti(cudaTextureObject_t texObj, CudaImage *results, float baseBlur, float diffScale, float initBlur)
+double LaplaceMulti(cudaTextureObject_t texObj, CudaImage &baseImage, CudaImage *results, float baseBlur, float diffScale, float initBlur)
 {
   float kernel[12*16];
   float scale = baseBlur;
@@ -313,8 +313,12 @@ double LaplaceMulti(cudaTextureObject_t texObj, CudaImage *results, float baseBl
   int pitch = results[0].pitch;
   int height = results[0].height;
   dim3 blocks(iDivUp(width+2*LAPLACE_R, LAPLACE_W), height);
-  dim3 threads(LAPLACE_W+2*LAPLACE_R, LAPLACE_S); 
-  LaplaceMulti<<<blocks, threads>>>(texObj, results[0].d_data, width, pitch, height);
+  dim3 threads(LAPLACE_W+2*LAPLACE_R, LAPLACE_S);
+#if 1
+  LaplaceMultiMem<<<blocks, threads>>>(baseImage.d_data, results[0].d_data, width, pitch, height);
+#else
+  LaplaceMultiTex<<<blocks, threads>>>(texObj, results[0].d_data, width, pitch, height);
+#endif
   checkMsg("LaplaceMulti() execution failed\n");
   return 0.0; 
 }
