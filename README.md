@@ -36,11 +36,11 @@ There are two different containers for storing data on the host and on the devic
 #include <cudaImage.h>
 #include <cudaSift.h>
 
-/* Reserve memory space for a whole bunch of SIFT features */
+/* Reserve memory space for a whole bunch of SIFT features. */
 SiftData siftData;
 InitSiftData(siftData, 25000, true, true);
 
-/* Read image using OpenCV */
+/* Read image using OpenCV and convert to floating point. */
 cv::Mat limg;
 cv::imread("image.png", 0).convertTo(limg, CV32FC1);
 /* Allocate 1280x960 pixel image with device side pitch of 1280 floats. */ 
@@ -50,11 +50,11 @@ img.Allocate(1280, 960, 1280, false, NULL, (float*) limg.data);
 /* Download image from host to device */
 img.Download();
 
-int numOctaves = 5;
-float initBlur = 1.0f;
-float thresh = 3.5f;
-float minScale = 0.0f;
-bool upScale = false;
+int numOctaves = 5;    /* Number of octaves in Gaussian pyramid */
+float initBlur = 1.0f; /* Amount of initial Gaussian blurring in standard deviations */
+float thresh = 3.5f;   /* Threshold on difference of Gaussians for feature pruning */
+float minScale = 0.0f; /* Minimum acceptable scale to remove fine-scale features */
+bool upScale = false;  /* Whether to upscale image before extraction */
 /* Extract SIFT features */
 ExtractSift(siftData, img, numOctaves, initBlur, thresh, minScale, upScale);
 ...
