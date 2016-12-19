@@ -29,24 +29,26 @@ The latest improvements involve a slight adaptation for Pascal, changing from te
 
 ## Usage
 
+There are two different containers for storing data on the host and on the device; *SiftData* for SIFT features and *CudaImage* for images. Since memory allocation on GPUs is slow, it's usually preferable to preallocate a sufficient amount of memory using *InitSiftData*, in particular if SIFT features are extracted from a continuous stream of video camera images. On repeated calls *ExtractSift* will reuse memory previously allocated.
 ~~~c
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <cudaImage.h>
 #include <cudaSift.h>
 
+/* Reserve memory space for a whole bunch of SIFT features */
+SiftData siftData;
+InitSiftData(siftData, 25000, true, true);
+
 /* Read image using OpenCV */
 cv::Mat limg;
 cv::imread("image.png", 0).convertTo(limg, CV32FC1);
-/* Allocate image for CUDA */
+/* Allocate 1280x960 pixel image with device side pitch of 1280 floats. */ 
+/* Memory on host side already allocated by OpenCV is reused.           */
 CudaImage img;
 img.Allocate(1280, 960, 1280, false, NULL, (float*) limg.data);
 /* Download image from host to device */
 img.Download();
-
-/* Reserve space for 32768 SIFT features */
-SiftData siftData;
-InitSiftData(siftData, 32768, true, true);
 
 int numOctaves = 5;
 float initBlur = 1.0f;
