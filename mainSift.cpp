@@ -36,10 +36,6 @@ int main(int argc, char **argv)
   unsigned int h = limg.rows;
   std::cout << "Image size = (" << w << "," << h << ")" << std::endl;
   
-  // Perform some initial blurring (if needed)
-  //cv::GaussianBlur(limg, limg, cv::Size(5,5), 1.0f);
-  //cv::GaussianBlur(rimg, rimg, cv::Size(5,5), 1.0f);
-        
   // Initial Cuda images and download images to device
   std::cout << "Initializing data..." << std::endl;
   InitCuda(devNum);
@@ -55,6 +51,8 @@ int main(int argc, char **argv)
   float thresh = 3.5f; //3.66f;
   InitSiftData(siftData1, 32768, true, true); 
   InitSiftData(siftData2, 32768, true, true);
+
+  // A bit of benchmarking 
   for (thresh=1.00f;thresh<=5.01f;thresh+=0.50f) {
     for (int i=0;i<10;i++) {
       ExtractSift(siftData1, img1, 5, initBlur, thresh, 0.0f, false);
@@ -69,11 +67,12 @@ int main(int argc, char **argv)
     FindHomography(siftData1, homography, &numMatches, 10000, 0.00f, 0.80f, 5.0);
     int numFit = ImproveHomography(siftData1, homography, 5, 0.00f, 0.80f, 3.0);
 
-    // Print out and store summary data
-    PrintMatchData(siftData1, siftData2, img1);
     std::cout << "Number of original features: " <<  siftData1.numPts << " " << siftData2.numPts << std::endl;
     std::cout << "Number of matching features: " << numFit << " " << numMatches << " " << 100.0f*numFit/std::min(siftData1.numPts, siftData2.numPts) << "% " << initBlur << " " << thresh << std::endl;
   }
+  
+  // Print out and store summary data
+  PrintMatchData(siftData1, siftData2, img1);
   cv::imwrite("data/limg_pts.pgm", limg);
 
   // Free Sift data from device
