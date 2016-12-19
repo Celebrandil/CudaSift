@@ -27,7 +27,7 @@ if (UNIX)
     list(APPEND CUDA_NVCC_FLAGS "-arch=sm_35;--compiler-options;-O2;-DVERBOSE") 
   else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -msse2 ")
-    list(APPEND CUDA_NVCC_FLAGS "-lineinfo;--compiler-options;-O2;-DVERBOSE") 
+    list(APPEND CUDA_NVCC_FLAGS "-lineinfo;--compiler-options;-O2") 
   endif()
 endif()
 
@@ -54,7 +54,7 @@ include_directories(
 
 SET(CUDA_SEPARABLE_COMPILATION ON)
 
-cuda_add_executable(cudasift ${cuda_sources} ${sources} OPTIONS -arch=sm_61)
+cuda_add_executable(cudasift ${cuda_sources} ${sources} OPTIONS -arch=sm_35)
 
 set_target_properties(cudasift PROPERTIES
   COMPILE_FLAGS "${EXTRA_CXX_FLAGS}"			   
