@@ -8,7 +8,7 @@ The code relies on CMake for compilation and OpenCV for image containers. OpenCV
 
 The code is free to use for non-commercial applications. If you use the code for research, please refer to the following paper.
 
-M. Bjorkman, N. Bergstrom and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. [ScienceDirect](http://www.sciencedirect.com/science/article/pii/S107731421300194X)
+M. Bj&ouml;rkman, N. Bergstr&ouml;m and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. [ScienceDirect](http://www.sciencedirect.com/science/article/pii/S107731421300194X)
 
 
 ## Benchmarking
@@ -29,7 +29,7 @@ The latest improvements involve a slight adaptation for Pascal, changing from te
 
 ## Usage
 
-There are two different containers for storing data on the host and on the device; *SiftData* for SIFT features and *CudaImage* for images. Since memory allocation on GPUs is slow, it's usually preferable to preallocate a sufficient amount of memory using *InitSiftData*, in particular if SIFT features are extracted from a continuous stream of video camera images. On repeated calls *ExtractSift* will reuse memory previously allocated.
+There are two different containers for storing data on the host and on the device; *SiftData* for SIFT features and *CudaImage* for images. Since memory allocation on GPUs is slow, it's usually preferable to preallocate a sufficient amount of memory using *InitSiftData()*, in particular if SIFT features are extracted from a continuous stream of video camera images. On repeated calls *ExtractSift()* will reuse memory previously allocated.
 ~~~c
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -65,9 +65,15 @@ FreeSiftData(siftData);
 
 ## Parameter setting
 
-Results without up-scaling (upScale=False) of 1280x960 pixel input image.
+The requirements on number and quality of features vary from application to application. Some applications benefit from a smaller number of high quality features, while others require as many features as possible. More distinct features with higher DoG (difference of Gaussians) responses tend to be of higher quality and are easier to match between multiple views. With the parameter *thresh* a threshold can be set on the minimum DoG to prune features of less quality. 
 
-| Threshold | #Matches | %Matches | Cost (ms) |
+In many cases the most fine-scale features are of little use, especially when noise conditions are severe or when features are matched between very different views. In such cases the most fine-scale features can be pruned by setting *minScale* to the minimum acceptable feature scale, where 1.0 corresponds to the original image scale without upscaling. As a consequence of pruning the computational cost can also be reduced.
+
+To increase the number of SIFT features, but also increase the computational cost, the original image can be automatically upscaled to double the size using the *upScale* parameter, in accordings with Lowe's recommendations. One should keep in mind though that by doing so the fraction of features that can be matched tend to go down, even if the total number of extracted features increases significantly. If it's enough to instead reduce the *thresh* parameter to get more features, that is often a better alternative.
+
+Results without upscaling (upScale=False) of 1280x960 pixel input image. 
+
+| *thresh* | #Matches | %Matches | Cost (ms) |
 |-----------|----------|----------|-----------|
 |    1.0    |   4236   |   40.4%  |    5.8    |
 |    1.5    |   3491   |   42.5%  |    5.2    |
@@ -78,9 +84,9 @@ Results without up-scaling (upScale=False) of 1280x960 pixel input image.
 |    4.0    |    881   |   48.5%  |    3.3    |
 
 
-Results with up-scaling (upScale=True) of 1280x960 pixel input image.
+Results with upscaling (upScale=True) of 1280x960 pixel input image.
 
-| Threshold | #Matches | %Matches | Cost (ms) |
+| *thresh* | #Matches | %Matches | Cost (ms) |
 |-----------|----------|----------|-----------|
 |    2.0    |   4502   |   34.9%  |   13.2    |
 |    2.5    |   3389   |   35.9%  |   11.2    |
