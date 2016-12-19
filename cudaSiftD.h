@@ -13,6 +13,12 @@
 // Scale down thread block height
 #define SCALEDOWN_H    16
 
+// Scale up thread block width
+#define SCALEUP_W      64
+
+// Scale up thread block height
+#define SCALEUP_H      8
+
 // Find point thread block width
 #define MINMAX_W      126 
 
@@ -26,7 +32,11 @@
 #define LAPLACE_S   (NUM_SCALES+3)
 
 // Laplace filter kernel radius
-#define LAPLACE_R       4 
+#define LAPLACE_R       4
+
+#define LOWPASS_W      56
+#define LOWPASS_H      16
+#define LOWPASS_R       4
 
 //====================== Number of threads ====================//
 // ScaleDown:               SCALEDOWN_W + 4

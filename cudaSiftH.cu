@@ -35,7 +35,7 @@ void InitCuda(int devNum)
 	 2.0*prop.memoryClockRate*(prop.memoryBusWidth/8)/1.0e6);
 }
 
-void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double initBlur, float thresh, float lowestScale, float subsampling) 
+void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double initBlur, float thresh, float lowestScale, bool scaleUp) 
 {
   TimerGPU timer(0);
   int totPts = 0;
@@ -43,27 +43,43 @@ void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double init
   safeCall(cudaMemcpyToSymbol(d_MaxNumPoints, &siftData.maxPts, sizeof(int)));
 
   const int nd = NUM_SCALES + 3;
-  int w = img.width;
-  int h = img.height;
+  int w = img.width*(scaleUp ? 2 : 1);
+  int h = img.height*(scaleUp ? 2 : 1);
   int p = iAlignUp(w, 128);
-  int size = 0;         // image sizes
-  int sizeTmp = nd*h*p; // laplace buffer sizes
+  int width = w, height = h;
+  int size = h*p;                 // image sizes
+  int sizeTmp = nd*h*p;           // laplace buffer sizes
   for (int i=0;i<numOctaves;i++) {
     w /= 2;
     h /= 2;
     int p = iAlignUp(w, 128);
     size += h*p;
-    sizeTmp += nd*h*p;
+    sizeTmp += nd*h*p; 
   }
-  float *memoryTmp = NULL;
+  float *memoryTmp = NULL; 
   size_t pitch;
   size += sizeTmp;
   safeCall(cudaMallocPitch((void **)&memoryTmp, &pitch, (size_t)4096, (size+4095)/4096*sizeof(float)));
   float *memorySub = memoryTmp + sizeTmp;
 
-  ExtractSiftLoop(siftData, img, numOctaves, initBlur, thresh, lowestScale, subsampling, memoryTmp, memorySub);
-  safeCall(cudaMemcpyFromSymbol(&siftData.numPts, d_PointCounter, sizeof(int)));
-  siftData.numPts = (siftData.numPts<siftData.maxPts ? siftData.numPts : siftData.maxPts);
+  CudaImage lowImg;
+  lowImg.Allocate(width, height, iAlignUp(width, 128), false, memorySub);
+  if (!scaleUp) {
+    LowPass(lowImg, img, max(initBlur, 0.001f));
+    ExtractSiftLoop(siftData, lowImg, numOctaves, 0.0f, thresh, lowestScale, 1.0f, memoryTmp, memorySub + height*iAlignUp(width, 128));
+    safeCall(cudaMemcpyFromSymbol(&siftData.numPts, d_PointCounter, sizeof(int)));
+    siftData.numPts = (siftData.numPts<siftData.maxPts ? siftData.numPts : siftData.maxPts);
+  } else {
+    CudaImage upImg;
+    upImg.Allocate(width, height, iAlignUp(width, 128), false, memoryTmp);
+    ScaleUp(upImg, img);
+    LowPass(lowImg, upImg, max(initBlur, 0.001f));
+    ExtractSiftLoop(siftData, lowImg, numOctaves, 0.0f, thresh, lowestScale*2.0f, 1.0f, memoryTmp, memorySub + height*iAlignUp(width, 128));
+    safeCall(cudaMemcpyFromSymbol(&siftData.numPts, d_PointCounter, sizeof(int)));
+    siftData.numPts = (siftData.numPts<siftData.maxPts ? siftData.numPts : siftData.maxPts);
+    RescalePositions(siftData, 0.5f);
+  }
+  
   safeCall(cudaFree(memoryTmp));
 #ifdef MANAGEDMEM
   safeCall(cudaDeviceSynchronize());
@@ -265,6 +281,20 @@ double ScaleDown(CudaImage &res, CudaImage &src, float variance)
   return 0.0;
 }
 
+double ScaleUp(CudaImage &res, CudaImage &src)
+{
+  if (res.d_data==NULL || src.d_data==NULL) {
+    printf("ScaleUp: missing data\n");
+    return 0.0;
+  }
+  dim3 blocks(iDivUp(res.width, SCALEUP_W), iDivUp(res.height, SCALEUP_H));
+  dim3 threads(SCALEUP_W, SCALEUP_H);
+  ScaleUp<<<blocks, threads>>>(res.d_data, src.d_data, src.width, src.pitch, src.height, res.pitch); 
+  checkMsg("ScaleUp() execution failed\n");
+  return 0.0;
+}
+
+
 double ComputeOrientations(cudaTextureObject_t texObj, SiftData &siftData, int fstPts, int totPts)
 {
   dim3 blocks(totPts - fstPts);
@@ -291,6 +321,37 @@ double ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftData &siftData, in
   return 0.0; 
 }
 
+double RescalePositions(SiftData &siftData, float scale)
+{
+  dim3 blocks(iDivUp(siftData.numPts, 64));
+  dim3 threads(64);
+  RescalePositions<<<blocks, threads>>>(siftData.d_data, siftData.numPts, scale);
+  checkMsg("RescapePositions() execution failed\n");
+  return 0.0; 
+}
+
+double LowPass(CudaImage &res, CudaImage &src, float scale)
+{
+  float kernel[16];
+  float kernelSum = 0.0f;
+  float ivar2 = 1.0f/(2.0f*scale*scale);
+  for (int j=-LOWPASS_R;j<=LOWPASS_R;j++) {
+    kernel[j+LOWPASS_R] = (float)expf(-(double)j*j*ivar2);
+    kernelSum += kernel[j+LOWPASS_R]; 
+  }
+  for (int j=-LOWPASS_R;j<=LOWPASS_R;j++) 
+    kernel[j+LOWPASS_R] /= kernelSum;  
+  safeCall(cudaMemcpyToSymbol(d_Kernel2, kernel, 12*16*sizeof(float)));
+  int width = res.width;
+  int pitch = res.pitch;
+  int height = res.height;
+  dim3 blocks(iDivUp(width, LOWPASS_W), iDivUp(height, LOWPASS_H));
+  dim3 threads(LOWPASS_W+2*LOWPASS_R, LOWPASS_H);
+  LowPass<<<blocks, threads>>>(src.d_data, res.d_data, width, pitch, height);
+  checkMsg("LowPass() execution failed\n");
+  return 0.0; 
+}
+
 //==================== Multi-scale functions ===================//
 
 double LaplaceMulti(cudaTextureObject_t texObj, CudaImage &baseImage, CudaImage *results, float baseBlur, float diffScale, float initBlur)
@@ -312,7 +373,7 @@ double LaplaceMulti(cudaTextureObject_t texObj, CudaImage &baseImage, CudaImage 
   int width = results[0].width;
   int pitch = results[0].pitch;
   int height = results[0].height;
-  dim3 blocks(iDivUp(width+2*LAPLACE_R, LAPLACE_W), height);
+  dim3 blocks(iDivUp(width, LAPLACE_W), height);
   dim3 threads(LAPLACE_W+2*LAPLACE_R, LAPLACE_S);
 #if 1
   LaplaceMultiMem<<<blocks, threads>>>(baseImage.d_data, results[0].d_data, width, pitch, height);
@@ -347,9 +408,9 @@ double FindPointsMulti(CudaImage *sources, SiftData &siftData, float thresh, flo
   dim3 blocks(iDivUp(w, MINMAX_W)*NUM_SCALES, iDivUp(h, MINMAX_H));
   dim3 threads(MINMAX_W + 2); 
 #ifdef MANAGEDMEM
-  FindPointsMulti<<<blocks, threads>>>(sources->d_data, siftData.m_data, w, p, h, NUM_SCALES, subsampling); 
+  FindPointsMulti<<<blocks, threads>>>(sources->d_data, siftData.m_data, w, p, h, NUM_SCALES, subsampling, lowestScale); 
 #else
-  FindPointsMulti<<<blocks, threads>>>(sources->d_data, siftData.d_data, w, p, h, NUM_SCALES, subsampling); 
+  FindPointsMulti<<<blocks, threads>>>(sources->d_data, siftData.d_data, w, p, h, NUM_SCALES, subsampling, lowestScale); 
 #endif
   checkMsg("FindPointsMulti() execution failed\n");
   return 0.0;
