@@ -8,7 +8,7 @@ The code relies on CMake for compilation and OpenCV for image containers. OpenCV
 
 The code is free to use for non-commercial applications. If you use the code for research, please refer to the following paper.
 
-M. Björkman, N. Bergström and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. [ScienceDirect](http://www.sciencedirect.com/science/article/pii/S107731421300194X)
+M. Bjorkman, N. Bergstrom and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. [ScienceDirect](http://www.sciencedirect.com/science/article/pii/S107731421300194X)
 
 
 ## Benchmarking
@@ -26,6 +26,40 @@ Computational cost (in milliseconds) on different GPUs (latest benchmark marked 
 Matching is done between two sets of 1050 and 1202 features respectively. 
  
 The latest improvements involve a slight adaptation for Pascal, changing from textures to global memory (mostly through L2) in the most costly function LaplaceMulti. The new medium-end card GTX 1060 is impressive indeed. It will be interesting to see the performance on the NVidia Titan X and other Pascal cards.
+
+## Usage
+
+~~~c
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <cudaImage.h>
+#include <cudaSift.h>
+
+/* Read image using OpenCV */
+cv::Mat limg;
+cv::imread("image.png", 0).convertTo(limg, CV32FC1);
+/* Allocate image for CUDA */
+CudaImage img;
+img.Allocate(1280, 960, 1280, false, NULL, (float*) limg.data);
+/* Download image from host to device */
+img.Download();
+
+/* Reserve space for 32768 SIFT features */
+SiftData siftData;
+InitSiftData(siftData, 32768, true, true);
+
+int numOctaves = 5;
+float initBlur = 1.0f;
+float thresh = 3.5f;
+float minScale = 0.0f;
+bool upScale = false;
+/* Extract SIFT features */
+ExtractSift(siftData, img, numOctaves, initBlur, thresh, minScale, upScale);
+...
+/* Free space allocated from SIFT features */
+FreeSiftData(siftData);
+
+~~~
 
 ## Parameter setting
 
