@@ -25,4 +25,31 @@ Computational cost (in milliseconds) on different GPUs (latest benchmark marked 
 
 Matching is done between two sets of 1050 and 1202 features respectively. 
  
-The latest improvements involve a slight adaptation for Pascal, changing from textures to global memory (mostly through L2) in the most costly function LaplaceMulti. The new medium-end card GTX 1060 is impressive indeed. It will be interesting to see the performance on the NVidia Titan X and other Pascal cards.  
+The latest improvements involve a slight adaptation for Pascal, changing from textures to global memory (mostly through L2) in the most costly function LaplaceMulti. The new medium-end card GTX 1060 is impressive indeed. It will be interesting to see the performance on the NVidia Titan X and other Pascal cards.
+
+## Parameter setting
+
+Results without up-scaling (upScale=False) of 1280x960 pixel input image.
+
+| Threshold | #Matches | %Matches | Cost (ms) |
+|-----------|----------|----------|-----------|
+|    1.0    |   4236   |   40.4%  |    5.8    |
+|    1.5    |   3491   |   42.5%  |    5.2    |
+|    2.0    |   2720   |   43.2%  |    4.7    |
+|    2.5    |   2121   |   44.4%  |    4.2    |
+|    3.0    |   1627   |   45.8%  |    3.9    |
+|    3.5    |   1189   |   46.2%  |    3.6    |
+|    4.0    |    881   |   48.5%  |    3.3    |
+
+
+Results with up-scaling (upScale=True) of 1280x960 pixel input image.
+
+| Threshold | #Matches | %Matches | Cost (ms) |
+|-----------|----------|----------|-----------|
+|    2.0    |   4502   |   34.9%  |   13.2    |
+|    2.5    |   3389   |   35.9%  |   11.2    |
+|    3.0    |   2529   |   37.1%  |   10.6    |
+|    3.5    |   1841   |   38.3%  |    9.9    |
+|    4.0    |   1331   |   39.8%  |    9.5    |
+|    4.5    |    954   |   42.2%  |    9.3    |
+|    5.0    |    611   |   39.3%  |    9.1    |
