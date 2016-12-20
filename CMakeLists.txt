@@ -27,7 +27,7 @@ if (UNIX)
     list(APPEND CUDA_NVCC_FLAGS "-arch=sm_35;--compiler-options;-O2;-DVERBOSE") 
   else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -msse2 ")
-    list(APPEND CUDA_NVCC_FLAGS "-lineinfo;--compiler-options;-O2") 
+    list(APPEND CUDA_NVCC_FLAGS "-lineinfo;--compiler-options;-O2;-DVERBOSE") 
   endif()
 endif()
 

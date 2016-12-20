@@ -128,10 +128,10 @@ __global__ void ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftPoint *d_
 {
   __shared__ float gauss[16];
   __shared__ float buffer[128];
-  __shared__ float sums[128];
+  __shared__ float sums[4];
 
   const int tx = threadIdx.x; // 0 -> 16
-  const int ty = threadIdx.y; // 0 -> 16
+  const int ty = threadIdx.y; // 0 -> 8
   const int idx = ty*16 + tx;
   const int bx = blockIdx.x + fstPts;  // 0 -> numPts
   if (ty==0)
@@ -184,7 +184,111 @@ __global__ void ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftPoint *d_
 	atomicAdd(buffer + p2+32,  angf*grad2);
       }
     }
-    if (tx<=14) { 
+    if (tx<=13) { 
+      float grad1 = horf*grad;
+      if (y>=2) {    // Upper right
+        float grad2 = iverf*grad1;
+	atomicAdd(buffer + p1+8, iangf*grad2);
+	atomicAdd(buffer + p2+8,  angf*grad2);
+      }
+      if (y<=13) {   // Lower right
+        float grad2 = verf*grad1;
+	atomicAdd(buffer + p1+40, iangf*grad2);
+	atomicAdd(buffer + p2+40,  angf*grad2);
+      }
+    }
+  }
+  __syncthreads();
+
+  // Normalize twice and suppress peaks first time
+  float sum = buffer[idx]*buffer[idx];
+  for (int i=1;i<=16;i*=2)
+    sum += __shfl_xor(sum, i);
+  if ((idx&31)==0)
+    sums[idx/32] = sum;
+  __syncthreads();
+  float tsum1 = sums[0] + sums[1] + sums[2] + sums[3]; 
+  tsum1 = min(buffer[idx] * rsqrtf(tsum1), 0.2f);
+  
+  sum = tsum1*tsum1; 
+  for (int i=1;i<=16;i*=2)
+    sum += __shfl_xor(sum, i);
+  if ((idx&31)==0)
+    sums[idx/32] = sum;
+  __syncthreads();
+
+  float tsum2 = sums[0] + sums[1] + sums[2] + sums[3];
+  float *desc = d_sift[bx].data;
+  desc[idx] = tsum1 * rsqrtf(tsum2);
+  if (idx==0) {
+    d_sift[bx].xpos *= subsampling;
+    d_sift[bx].ypos *= subsampling;
+    d_sift[bx].scale *= subsampling;
+  }
+}
+ 
+
+__global__ void ExtractSiftDescriptorsOld(cudaTextureObject_t texObj, SiftPoint *d_sift, int fstPts, float subsampling)
+{
+  __shared__ float gauss[16];
+  __shared__ float buffer[128];
+  __shared__ float sums[128];
+
+  const int tx = threadIdx.x; // 0 -> 16
+  const int ty = threadIdx.y; // 0 -> 8
+  const int idx = ty*16 + tx;
+  const int bx = blockIdx.x + fstPts;  // 0 -> numPts
+  if (ty==0)
+    gauss[tx] = exp(-(tx-7.5f)*(tx-7.5f)/128.0f);
+  buffer[idx] = 0.0f;
+  __syncthreads();
+
+  // Compute angles and gradients
+  float theta = 2.0f*3.1415f/360.0f*d_sift[bx].orientation;
+  float sina = sinf(theta);           // cosa -sina
+  float cosa = cosf(theta);           // sina  cosa
+  float scale = 12.0f/16.0f*d_sift[bx].scale;
+  float ssina = scale*sina; 
+  float scosa = scale*cosa;
+
+  for (int y=ty;y<16;y+=8) {
+    float xpos = d_sift[bx].xpos + (tx-7.5f)*scosa - (y-7.5f)*ssina;
+    float ypos = d_sift[bx].ypos + (tx-7.5f)*ssina + (y-7.5f)*scosa;
+    float dx = tex2D<float>(texObj, xpos+cosa, ypos+sina) - 
+      tex2D<float>(texObj, xpos-cosa, ypos-sina);
+    float dy = tex2D<float>(texObj, xpos-sina, ypos+cosa) - 
+      tex2D<float>(texObj, xpos+sina, ypos-cosa);
+    float grad = gauss[y]*gauss[tx] * sqrtf(dx*dx + dy*dy);
+    float angf = 4.0f/3.1415f*atan2f(dy, dx) + 4.0f;
+    
+    int hori = (tx + 2)/4 - 1;      // Convert from (tx,y,angle) to bins      
+    float horf = (tx - 1.5f)/4.0f - hori;  
+    float ihorf = 1.0f - horf;           
+    int veri = (y + 2)/4 - 1;
+    float verf = (y - 1.5f)/4.0f - veri;
+    float iverf = 1.0f - verf;
+    int angi = angf;
+    int angp = (angi<7 ? angi+1 : 0);
+    angf -= angi;
+    float iangf = 1.0f - angf;
+    
+    int hist = 8*(4*veri + hori);   // Each gradient measure is interpolated 
+    int p1 = angi + hist;           // in angles, xpos and ypos -> 8 stores
+    int p2 = angp + hist;
+    if (tx>=2) { 
+      float grad1 = ihorf*grad;
+      if (y>=2) {   // Upper left
+        float grad2 = iverf*grad1;
+	atomicAdd(buffer + p1, iangf*grad2);
+	atomicAdd(buffer + p2,  angf*grad2);
+      }
+      if (y<=13) {  // Lower left
+        float grad2 = verf*grad1;
+	atomicAdd(buffer + p1+32, iangf*grad2); 
+	atomicAdd(buffer + p2+32,  angf*grad2);
+      }
+    }
+    if (tx<=13) { 
       float grad1 = horf*grad;
       if (y>=2) {    // Upper right
         float grad2 = iverf*grad1;
