@@ -1,6 +1,6 @@
 # CudaSift - SIFT features with CUDA
 
-This is the fourth version of a SIFT (Scale Invariant Feature Transform) implementation using CUDA for GPUs from NVidia. The first version is from 2007 and GPUs have evolved since then. This version is slightly more precise and considerably faster than the previous versions and has been optimized for Tesla K40 using larger images.
+This is the fourth version of a SIFT (Scale Invariant Feature Transform) implementation using CUDA for GPUs from NVidia. The first version is from 2007 and GPUs have evolved since then. This version is slightly more precise and considerably faster than the previous versions and has been optimized for Kepler and later generations of GPUs.
 
 On a GTX 1060 GPU the code takes about 2.7 ms on a 1280x960 pixel image and 3.8 ms on a 1920x1080 pixel image. There is also code for brute-force matching of features and homography computation that takes about 3.7 ms for two sets of around 2250 SIFT features each.
 
@@ -18,7 +18,7 @@ Computational cost (in milliseconds) on different GPUs (latest benchmark marked 
 |         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
 | Pascal  | GeForce GTX 1060    |   2.7* |     3.8* |	   3855  |    192  |   3.7* |
-| Maxwell | GeForce GTX 970     |   5.0  |     6.5  |    3494    |  224    |   1.6  |
+| Maxwell | GeForce GTX 970     |   4.2* |     5.7*  |    3494    |  224    |   4.2*  |
 | Maxwell | GeForce GTX 750 Ti  | 10.6   |   14.7   |    1306    |   86    |   3.2  |
 | Kepler  | Tesla K40c          |  5.5*   |    7.8*   |    4291    |  288    |   8.1*  |
 | Kepler  | GeForce GTX TITAN   |  4.6   |    5.8   |    4500    |  288    |   2.5  |
