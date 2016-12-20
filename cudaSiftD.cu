@@ -158,7 +158,7 @@ __global__ void ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftPoint *d_
     float angf = 4.0f/3.1415f*atan2f(dy, dx) + 4.0f;
     
     int hori = (tx + 2)/4 - 1;      // Convert from (tx,y,angle) to bins      
-    float horf = (tx - 1.5f)/4.0f - hori;  
+    float horf = (tx - 1.5f)/4.0f - hori;
     float ihorf = 1.0f - horf;           
     int veri = (y + 2)/4 - 1;
     float verf = (y - 1.5f)/4.0f - veri;
