@@ -19,8 +19,7 @@ Computational cost (in milliseconds) on different GPUs (latest benchmark marked 
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
 | Pascal  | GeForce GTX 1080 Ti |   1.7* |     2.3* |	10609    |  484    |   1.4* |
 | Pascal  | GeForce GTX 1060    |   2.7* |     4.0* |	 3855    |  192    |   2.6* |
-| Maxwell | GeForce GTX 970     |   4.2  |     5.7  |    3494    |  224    |   4.2  |
-| Maxwell | GeForce GTX 750 Ti  |  10.6  |    14.7  |    1306    |   86    |   3.2  |
+| Maxwell | GeForce GTX 970     |   3.8* |     5.6* |    3494    |  224    |   2.8* |
 | Kepler  | Tesla K40c          |   5.4* |     8.0* |    4291    |  288    |   5.5* |
 | Kepler  | GeForce GTX TITAN   |   4.4* |     6.6* |    4500    |  288    |   4.6* |
 
