@@ -17,13 +17,14 @@ Computational cost (in milliseconds) on different GPUs (latest benchmark marked 
 
 |         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
-| Pascal  | GeForce GTX 1060    |   2.7* |     3.8* |	   3855  |    192  |   3.7* |
-| Maxwell | GeForce GTX 970     |   4.2* |     5.7*  |    3494    |  224    |   4.2*  |
-| Maxwell | GeForce GTX 750 Ti  | 10.6   |   14.7   |    1306    |   86    |   3.2  |
-| Kepler  | Tesla K40c          |  5.5*   |    7.8*   |    4291    |  288    |   8.1*  |
-| Kepler  | GeForce GTX TITAN   |  4.6   |    5.8   |    4500    |  288    |   2.5  |
+| Pascal  | GeForce GTX 1080 Ti |   1.7* |     2.3* |	10609    |  484    |   1.4* |
+| Pascal  | GeForce GTX 1060    |   2.7* |     4.0* |	 3855    |  192    |   2.6* |
+| Maxwell | GeForce GTX 970     |   4.2  |     5.7  |    3494    |  224    |   4.2  |
+| Maxwell | GeForce GTX 750 Ti  |  10.6  |    14.7  |    1306    |   86    |   3.2  |
+| Kepler  | Tesla K40c          |   5.4* |     8.0* |    4291    |  288    |   5.5* |
+| Kepler  | GeForce GTX TITAN   |   4.4* |     6.6* |    4500    |  288    |   4.6* |
 
-Matching is done between two sets of 1815 and 2527 features respectively. 
+Matching is done between two sets of 1616 and 1769 features respectively. 
  
 The latest improvements involve a slight adaptation for Pascal, changing from textures to global memory (mostly through L2) in the most costly function LaplaceMulti. The new medium-end card GTX 1060 is impressive indeed. It will be interesting to see the performance on the NVidia Titan X and other Pascal cards.
 
