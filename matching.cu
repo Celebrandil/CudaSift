@@ -36,20 +36,6 @@ __global__ void MatchSiftPoints(SiftPoint *sift1, SiftPoint *sift2, float *corrD
   __syncthreads();
 }
 
-/*
-MatchSiftData time =          48.55 ms
-MatchSiftData time =          31.45 ms
-MatchSiftData time =          19.78 ms
-MatchSiftData time =          11.42 ms
-MatchSiftData time =          7.27 ms
-MatchSiftData time =          4.70 ms
-MatchSiftData time =          3.28 ms
-Shared memory: 6636 GB/s (High)
-L2 Cache:       271 GB/s (Low)
-Unified Cache:  526 GB/s (Low-)
-Device Memory:  143 GB/s (Low+)
-*/
-
 __global__ void MatchSiftPoints2(SiftPoint *sift1, SiftPoint *sift2, float *corrData, int numPts1, int numPts2)
 {
   __shared__ float siftPoints1[16*128];
