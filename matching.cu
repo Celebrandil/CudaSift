@@ -1,5 +1,14 @@
+#include <cuda_runtime_api.h>
 #include "cudaSift.h"
 #include "cudautils.h"
+
+static __device__ __inline__ float ShiftDown(float var, unsigned int delta) {
+#if (CUDART_VERSION >= 9000)
+  return __shfl_down_sync(0xffffffff, var, delta);
+#else
+  return __shfl_down(var, delta);
+#endif
+}
 
 //================= Device matching functions =====================//
 
@@ -89,10 +98,10 @@ __global__ void MatchSiftPoints4(SiftPoint *sift1, SiftPoint *sift2, float *corr
   if (p2<numPts2)
     for (int j=0;j<8;j++)
       sum += ptr1[16*j+tx] * ptr2[16*j+tx];
-  sum += __shfl_down_sync(0xffffffff, sum, 8);
-  sum += __shfl_down_sync(0xffffffff, sum, 4);
-  sum += __shfl_down_sync(0xffffffff, sum, 2);
-  sum += __shfl_down_sync(0xffffffff, sum, 1);
+  sum += ShiftDown(sum, 8);
+  sum += ShiftDown(sum, 4);
+  sum += ShiftDown(sum, 2);
+  sum += ShiftDown(sum, 1);
   if (tx==0)
     corrData[p1*gridDim.y*16 + blockIdx.y*16 + ty] = sum;
 }
@@ -182,7 +191,7 @@ __global__ void FindMaxCorr2(SiftPoint *sift1, SiftPoint *sift2, int numPts1, in
     for (int j=tx;j<128;j+=FMC2W)
       sum += siftPoint[j] * pt2[j];
     for (int j=FMC2W/2;j>0;j/=2)
-      sum += __shfl_down_sync(0xffffffff, sum, j);
+      sum += ShiftDown(sum, j);
     if (tx==0) {
       if (sum>maxScore[ty]) {
 	maxScor2[ty] = maxScore[ty];
@@ -314,7 +323,7 @@ __global__ void FindMaxCorr4(SiftPoint *sift1, SiftPoint *sift2, int numPts1, in
     for (int j=tx;j<128;j+=FMC2W)
       sum += siftPoint[128*ty + j] * pt2[j]; 
     for (int j=FMC2W/2;j>0;j/=2)
-      sum += __shfl_down_sync(0xffffffff, sum, j);
+      sum += ShiftDown(sum, j);
     if (tx==0) {
       if (sum>maxScore[ty]) {
 	maxScor2[ty] = maxScore[ty];
