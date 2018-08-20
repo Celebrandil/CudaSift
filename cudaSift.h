@@ -25,7 +25,7 @@ typedef struct {
   int numPts;         // Number of available Sift points
   int maxPts;         // Number of allocated Sift points
 #ifdef MANAGEDMEM
-  SiftPoint *m_data;    // Managed data
+  SiftPoint *m_data;  // Managed data
 #else
   SiftPoint *h_data;  // Host (CPU) data
   SiftPoint *d_data;  // Device (GPU) data
@@ -33,7 +33,9 @@ typedef struct {
 } SiftData;
 
 void InitCuda(int devNum = 0);
-void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double initBlur, float thresh, float lowestScale = 0.0f, bool scaleUp = false);
+float *AllocSiftTempMemory(int width, int height, int numOctaves, bool scaleUp = false);
+void FreeSiftTempMemory(float *memoryTmp);
+void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double initBlur, float thresh, float lowestScale = 0.0f, bool scaleUp = false, float *tempMemory = 0);
 void InitSiftData(SiftData &data, int num = 1024, bool host = false, bool dev = true);
 void FreeSiftData(SiftData &data);
 void PrintSiftData(SiftData &data);
