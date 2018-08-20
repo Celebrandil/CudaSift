@@ -10,9 +10,12 @@
 // Kernel configuration
 ///////////////////////////////////////////////////////////////////////////////
 
-__constant__ float d_Threshold[2];
-__constant__ float d_Scales[8], d_Factor;
-__constant__ float d_EdgeLimit;
+__constant__ struct {
+  float threshold[2];
+  float scales[8], factor;
+  float edgeLimit;
+} d_FindParams;
+  
 __constant__ int d_MaxNumPoints;
 
 __device__ unsigned int d_PointCounter[1];
@@ -436,6 +439,22 @@ __global__ void ComputeOrientations(cudaTextureObject_t texObj, SiftPoint *d_Sif
   }
 } 
 
+
+__global__ void OrientAndExtract(cudaTextureObject_t texObj, SiftPoint *d_Sift, int fstPts, float subsampling)
+{
+  int totPts = min(d_PointCounter[0], d_MaxNumPoints);
+  if (totPts>fstPts) {
+    dim3 blocks0(totPts - fstPts);
+    dim3 threads0(128);
+    ComputeOrientations<<<blocks0, threads0>>>(texObj, d_Sift, fstPts);
+    totPts = min(d_PointCounter[0], d_MaxNumPoints);
+    dim3 blocks1(totPts - fstPts); 
+    dim3 threads1(16, 8);
+    ExtractSiftDescriptors<<<blocks1, threads1>>>(texObj, d_Sift, fstPts, subsampling);
+  }
+}
+
+
 ///////////////////////////////////////////////////////////////////////////////
 // Subtract two images (multi-scale version)
 ///////////////////////////////////////////////////////////////////////////////
@@ -465,8 +484,18 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
   for (int y=0;y<yloops;y++) {
 
     int ypos = MINMAX_H*blockIdx.y + y;
-    int yptr0 = ptr + max(0,ypos-1)*pitch;
     int yptr1 = ptr + ypos*pitch;
+    float maxv = fabs(d_Data0[yptr1 + 1*size]);
+    maxv = fmaxf(maxv, __shfl_down_sync(0xffffffff, maxv, 16));
+    maxv = fmaxf(maxv, __shfl_down_sync(0xffffffff, maxv, 8));
+    maxv = fmaxf(maxv, __shfl_down_sync(0xffffffff, maxv, 4));
+    maxv = fmaxf(maxv, __shfl_down_sync(0xffffffff, maxv, 2));
+    maxv = fmaxf(maxv, __shfl_down_sync(0xffffffff, maxv, 1));
+    ymax2[tx] = maxv;
+    __syncthreads();
+    if (fmaxf(ymax2[0], ymax2[32])<=d_FindParams.threshold[0])
+      continue;
+    int yptr0 = ptr + max(0,ypos-1)*pitch;
     int yptr2 = ptr + min(height-1,ypos+1)*pitch;
     {
       float d10 = d_Data0[yptr0];
@@ -489,7 +518,7 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
     ymax2[tx] = fmaxf(fmaxf(ymax1[tx], fmaxf(fmaxf(d20, d21), d22)), ymax3[tx]);
     __syncthreads(); 
     if (tx>0 && tx<MINMAX_W+1 && xpos<=maxx) {
-      if (d21<d_Threshold[1]) {
+      if (d21<d_FindParams.threshold[1]) {
 	float minv = fminf(fminf(fminf(ymin2[tx-1], ymin2[tx+1]), ymin1[tx]), ymin3[tx]);
 	minv = fminf(fminf(minv, d20), d22);
 	if (d21<minv) { 
@@ -499,7 +528,7 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
 	  points[3*pos+2] = scale;
 	}
       } 
-      if (d21>d_Threshold[0]) {
+      if (d21>d_FindParams.threshold[0]) {
 	float maxv = fmaxf(fmaxf(fmaxf(ymax2[tx-1], ymax2[tx+1]), ymax1[tx]), ymax3[tx]);
 	maxv = fmaxf(fmaxf(maxv, d20), d22);
 	if (d21>maxv) { 
@@ -524,7 +553,7 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
     float dxy = 0.25f*(data1[+pitch+1] + data1[-pitch-1] - data1[-pitch+1] - data1[+pitch-1]);
     float tra = dxx + dyy;
     float det = dxx*dyy - dxy*dxy;
-    if (tra*tra<d_EdgeLimit*det) {
+    if (tra*tra<d_FindParams.edgeLimit*det) {
       float edge = __fdividef(tra*tra, det);
       float dx = 0.5f*(data1[1] - data1[-1]);
       float dy = 0.5f*(data1[pitch] - data1[-pitch]); 
@@ -551,7 +580,7 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
       }
       float dval = 0.5f*(dx*pdx + dy*pdy + ds*pds);
       int maxPts = d_MaxNumPoints;
-      float sc = d_Scales[scale] * exp2f(pds*d_Factor);
+      float sc = d_FindParams.scales[scale] * exp2f(pds*d_FindParams.factor);
       if (sc>=lowestScale) {
 	unsigned int idx = atomicInc(d_PointCounter, 0x7fffffff);
 	idx = (idx>=maxPts ? maxPts-1 : idx);

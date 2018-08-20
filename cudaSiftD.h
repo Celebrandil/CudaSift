@@ -20,7 +20,7 @@
 #define SCALEUP_H      8
 
 // Find point thread block width
-#define MINMAX_W      126 
+#define MINMAX_W       62 
 
 // Find point thread block height
 #define MINMAX_H        4

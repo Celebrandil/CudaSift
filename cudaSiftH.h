@@ -14,6 +14,7 @@ double ScaleDown(CudaImage &res, CudaImage &src, float variance);
 double ScaleUp(CudaImage &res, CudaImage &src);
 double ComputeOrientations(cudaTextureObject_t texObj, SiftData &siftData, int fstPts, int totPts);
 double ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftData &siftData, int fstPts, int totPts, float subsampling);
+double OrientAndExtract(cudaTextureObject_t texObj, SiftData &siftData, int fstPts, float subsampling);
 double RescalePositions(SiftData &siftData, float scale);
 double LowPass(CudaImage &res, CudaImage &src, float scale);
 double LaplaceMulti(cudaTextureObject_t texObj, CudaImage &baseImage, CudaImage *results, float baseBlur, float diffScale, float initBlur);
