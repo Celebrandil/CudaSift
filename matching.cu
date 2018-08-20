@@ -2,14 +2,6 @@
 #include "cudaSift.h"
 #include "cudautils.h"
 
-static __device__ __inline__ float ShiftDown(float var, unsigned int delta) {
-#if (CUDART_VERSION >= 9000)
-  return __shfl_down_sync(0xffffffff, var, delta);
-#else
-  return __shfl_down(var, delta);
-#endif
-}
-
 //================= Device matching functions =====================//
 
 __global__ void MatchSiftPoints(SiftPoint *sift1, SiftPoint *sift2, float *corrData, int numPts1, int numPts2)

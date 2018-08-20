@@ -369,6 +369,7 @@ double ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftData &siftData, in
   return 0.0; 
 }
 
+#if 0
 double OrientAndExtract(cudaTextureObject_t texObj, SiftData &siftData, int fstPts, float subsampling)
 {
 #ifdef MANAGEDMEM
@@ -379,6 +380,7 @@ double OrientAndExtract(cudaTextureObject_t texObj, SiftData &siftData, int fstP
   checkMsg("OrientAndExtract() execution failed\n");
   return 0.0;
 }
+#endif
 
 double RescalePositions(SiftData &siftData, float scale)
 {
@@ -453,23 +455,26 @@ double FindPointsMulti(CudaImage *sources, SiftData &siftData, float thresh, flo
   int p = sources->pitch;
   int h = sources->height;
   
-  struct {
-    float threshs[2];
-    float scales[8];
-    float factor;
-    float edgeLimit;
+  union {
+    struct {
+      float threshs[2];
+      float scales[8];
+      float factor;
+      float edgeLimit;
+    } s;
+    float data[12];
   } params;
-  params.threshs[0] = thresh;
-  params.threshs[1] = -thresh;
-  params.factor = factor;
-  params.edgeLimit = edgeLimit;
+  params.s.threshs[0] = thresh;
+  params.s.threshs[1] = -thresh;
+  params.s.factor = factor;
+  params.s.edgeLimit = edgeLimit;
   float diffScale = pow(2.0f, factor);
   for (int i=0;i<NUM_SCALES;i++) {
     //scales[i] = scale;
-    params.scales[i] = scale;
+    params.s.scales[i] = scale;
     scale *= diffScale;
   }
-  safeCall(cudaMemcpyToSymbol(d_FindParams, &params, 12*sizeof(float)));
+  safeCall(cudaMemcpyToSymbol(*d_FindParams.data, params.data, 12*sizeof(float)));
 
   dim3 blocks(iDivUp(w, MINMAX_W)*NUM_SCALES, iDivUp(h, MINMAX_H));
   dim3 threads(MINMAX_W + 2); 

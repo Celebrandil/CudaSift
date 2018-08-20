@@ -106,6 +106,13 @@ public:
   }
 };
 
+static __device__ __inline__ float ShiftDown(float var, unsigned int delta) {
+#if (CUDART_VERSION >= 9000)
+  return __shfl_down_sync(0xffffffff, var, delta);
+#else
+  return __shfl_down(var, delta);
+#endif
+}
 
 #endif
 
