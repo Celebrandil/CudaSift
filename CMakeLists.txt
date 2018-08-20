@@ -45,7 +45,7 @@ set(cuda_sources
 
 set(sources
   geomFuncs.cpp  
-  mainSift.cpp 
+  mainSift.cpp  
 )
 
 include_directories(
