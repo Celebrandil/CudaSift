@@ -40,7 +40,7 @@ Computational cost (in milliseconds) on different GPUs (latest benchmark marked 
 
 Matching is done between two sets of 1616 and 1769 features respectively. 
  
-The latest improvements involve a slight adaptation for Pascal, changing from textures to global memory (mostly through L2) in the most costly function LaplaceMulti. The new medium-end card GTX 1060 is impressive indeed. It will be interesting to see the performance on the NVidia Titan X and other Pascal cards.
+The latest improvements involve a slight adaptation for Pascal, changing from textures to global memory (mostly through L2) in the most costly function LaplaceMulti. The medium-end card GTX 1060 is impressive indeed. 
 
 ## Usage
 
