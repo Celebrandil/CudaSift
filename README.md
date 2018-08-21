@@ -24,7 +24,7 @@ About every 2nd year, I try to update the code to gain even more speed through f
 
 Matching is done between two sets of 1818 and 1978 features respectively. 
 
-It's questionable whether further optimization really makes sense, given that the cost of just transfering an 1920x1080 pixel image to the device takes about 1.4 ms on a GTX 1080 Ti. The matching numbers need to be looked at, since the older version performed considerably better on older cards. This new version does not have the O(N^2) memory overhead, which is a indeed preferable.
+It's questionable whether further optimization really makes sense, given that the cost of just transfering an 1920x1080 pixel image to the device takes about 1.4 ms on a GTX 1080 Ti. The matching numbers need to be looked at, since the older version performed considerably better on older cards. However, the new version does not have the O(N^2) memory overhead, which is a indeed preferable.
 
 ## Benchmarking
 
