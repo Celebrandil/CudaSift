@@ -17,6 +17,7 @@ About every 2nd year, I try to update the code to gain even more speed through f
 |         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
 | Pascal  | GeForce GTX 1080 Ti |   0.7  |     1.0  |	10609    |  484    |   1.3 |
+| Kepler  | Tesla K40c          |   3.1  |     4.7  |    4291    |  288    |   9.7 |
 
 Matching is done between two sets of 1818 and 1978 features respectively. 
 
