@@ -10,6 +10,17 @@ The code is free to use for non-commercial applications. If you use the code for
 
 M. Bj&ouml;rkman, N. Bergstr&ouml;m and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. [ScienceDirect](http://www.sciencedirect.com/science/article/pii/S107731421300194X)
 
+## Benchmarking of version under testing
+
+About every 2nd year, I try to update the code to gain even more speed through further optimization. Here are some results for a version that is currently undergoing tests. Improvements in speed have primarilly been gained by reducing communication between host and device, better balancing the load on caches, shared and global memory, and increasing the workload of each thread block.
+
+|         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
+| ------- | ------------------- | -------| ---------| ---------- | --------|--------|
+| Pascal  | GeForce GTX 1080 Ti |   0.7  |     1.0  |	10609    |  484    |   1.3 |
+
+Matching is done between two sets of 1818 and 1978 features respectively. 
+
+It's questionable whether further optimization really makes sense, given that the cost of just transfering an 1920x1080 pixel image to the device takes about 1.4 ms on a GTX 1080 Ti.
 
 ## Benchmarking
 
@@ -17,11 +28,11 @@ Computational cost (in milliseconds) on different GPUs (latest benchmark marked 
 
 |         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
-| Pascal  | GeForce GTX 1080 Ti |   1.7* |     2.3* |	10609    |  484    |   1.4* |
-| Pascal  | GeForce GTX 1060    |   2.7* |     4.0* |	 3855    |  192    |   2.6* |
-| Maxwell | GeForce GTX 970     |   3.8* |     5.6* |    3494    |  224    |   2.8* |
-| Kepler  | Tesla K40c          |   5.4* |     8.0* |    4291    |  288    |   5.5* |
-| Kepler  | GeForce GTX TITAN   |   4.4* |     6.6* |    4500    |  288    |   4.6* |
+| Pascal  | GeForce GTX 1080 Ti |   1.7  |     2.3  |	10609    |  484    |   1.4 |
+| Pascal  | GeForce GTX 1060    |   2.7  |     4.0  |	 3855    |  192    |   2.6 |
+| Maxwell | GeForce GTX 970     |   3.8  |     5.6  |    3494    |  224    |   2.8 |
+| Kepler  | Tesla K40c          |   5.4  |     8.0  |    4291    |  288    |   5.5 |
+| Kepler  | GeForce GTX TITAN   |   4.4  |     6.6  |    4500    |  288    |   4.6 |
 
 Matching is done between two sets of 1616 and 1769 features respectively. 
  
