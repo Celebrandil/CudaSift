@@ -10,20 +10,21 @@ The code is free to use for non-commercial applications. If you use the code for
 
 M. Bj&ouml;rkman, N. Bergstr&ouml;m and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. [ScienceDirect](http://www.sciencedirect.com/science/article/pii/S107731421300194X)
 
-## Benchmarking of version under testing
+## Benchmarking of working version undergoing tests
 
-About every 2nd year, I try to update the code to gain even more speed through further optimization. Here are some results for a version that is currently undergoing tests. Improvements in speed have primarilly been gained by reducing communication between host and device, better balancing the load on caches, shared and global memory, and increasing the workload of each thread block.
+About every 2nd year, I try to update the code to gain even more speed through further optimization. Here are some results for a version that is currently being tested. Improvements in speed have primarilly been gained by reducing communication between host and device, better balancing the load on caches, shared and global memory, and increasing the workload of each thread block.
 
 |         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
 | Pascal  | GeForce GTX 1080 Ti |   0.7  |     1.0  |	10609    |  484    |   1.3 |
-| Pascal  | Nvidia TITAN Xp     |   0.7  |     1.0  |	10790    |  548    |   1.4 |
+| Pascal  | GeForce GTX 1060    |   1.6  |     2.4  |	3855    |  192    |   3.4 |
+| Maxwell | GeForce GTX 970     |   1.9  |     2.8  |    3494    |  224    |   4.5 |
 | Kepler  | Tesla K40c          |   3.1  |     4.7  |    4291    |  288    |   9.7 |
 | Kepler  | GeForce GTX TITAN   |   2.9  |     4.3  |    4500    |  288    |   9.5 |
 
 Matching is done between two sets of 1818 and 1978 features respectively. 
 
-It's questionable whether further optimization really makes sense, given that the cost of just transfering an 1920x1080 pixel image to the device takes about 1.4 ms on a GTX 1080 Ti.
+It's questionable whether further optimization really makes sense, given that the cost of just transfering an 1920x1080 pixel image to the device takes about 1.4 ms on a GTX 1080 Ti. The matching numbers need to be looked at, since the older version performed considerably better on older cards. This new version does not have the O(N^2) memory overhead, which is a indeed preferable.
 
 ## Benchmarking
 
