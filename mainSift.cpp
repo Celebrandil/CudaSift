@@ -62,14 +62,14 @@ int main(int argc, char **argv)
   // A bit of benchmarking 
   //for (int thresh1=1.00f;thresh1<=4.01f;thresh1+=0.50f) {
   float *memoryTmp = AllocSiftTempMemory(w, h, 5, false);
-    for (int i=0;i<50;i++) {
+    for (int i=0;i<1;i++) {
       ExtractSift(siftData1, img1, 5, initBlur, thresh, 0.0f, false, memoryTmp);
       ExtractSift(siftData2, img2, 5, initBlur, thresh, 0.0f, false, memoryTmp);
     }
     FreeSiftTempMemory(memoryTmp);
     
     // Match Sift features and find a homography
-    for (int i=0;i<50;i++)
+    for (int i=0;i<500;i++)
       MatchSiftData(siftData1, siftData2);
     float homography[9];
     int numMatches;

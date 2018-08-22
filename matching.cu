@@ -63,41 +63,6 @@ __global__ void MatchSiftPoints2(SiftPoint *sift1, SiftPoint *sift2, float *corr
     corrData[p1*gridDim.y*16 + p2] = (p2<numPts2 ? sum : -1.0f);
 }
 
-__global__ void MatchSiftPoints3(SiftPoint *sift1, SiftPoint *sift2, float *corrData, int numPts1, int numPts2)
-{
-  const int tx = threadIdx.x;
-  const int ty = threadIdx.y;
-  const int p1 = blockIdx.x*16 + ty;
-  const int p2 = blockIdx.y*16 + tx;
-  const float *pt1 = sift1[min(numPts1-1,p1)].data;
-  const float *pt2 = sift2[min(numPts2-1,p2)].data;
-  float sum = 0.0f;
-  for (int i=0;i<128;i++) 
-    sum += pt1[i]*pt2[i];
-  if (p1<numPts1)
-    corrData[p1*gridDim.y*16 + p2] = (p2<numPts2 ? sum : -1.0f);
-}
-
-__global__ void MatchSiftPoints4(SiftPoint *sift1, SiftPoint *sift2, float *corrData, int numPts1, int numPts2)
-{
-  const int tx = threadIdx.x;
-  const int ty = threadIdx.y;
-  const int p1 = blockIdx.x;
-  const int p2 = blockIdx.y*16 + ty;
-  const float *ptr1 = sift1[p1].data;
-  const float *ptr2 = sift2[p2].data;
-  float sum = 0.0f;
-  if (p2<numPts2)
-    for (int j=0;j<8;j++)
-      sum += ptr1[16*j+tx] * ptr2[16*j+tx];
-  sum += ShiftDown(sum, 8);
-  sum += ShiftDown(sum, 4);
-  sum += ShiftDown(sum, 2);
-  sum += ShiftDown(sum, 1);
-  if (tx==0)
-    corrData[p1*gridDim.y*16 + blockIdx.y*16 + ty] = sum;
-}
-
 __global__ void FindMaxCorr(float *corrData, SiftPoint *sift1, SiftPoint *sift2, int numPts1, int corrWidth, int siftSize)
 {
   __shared__ float maxScore[16*16];
@@ -139,21 +104,79 @@ __global__ void FindMaxCorr(float *corrData, SiftPoint *sift1, SiftPoint *sift2,
     }
     __syncthreads();
   }
-  if (tx==6)
+  if (tx==0) {
     sift1[p1].score = maxScore[ty*16];
-  if (tx==7)
     sift1[p1].ambiguity = maxScor2[ty*16] / (maxScore[ty*16] + 1e-6);
-  if (tx==8)
     sift1[p1].match = maxIndex[ty*16];
-  if (tx==9)
     sift1[p1].match_xpos = sift2[maxIndex[ty*16]].xpos;
-  if (tx==10)
     sift1[p1].match_ypos = sift2[maxIndex[ty*16]].ypos;
+  }
+}
+
+// Version based on suggestion by Nicholas Lin
+__global__ void FindMaxCorr3(float *corrData, SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
+{
+  int block_dim = blockDim.x; // blockDim.x == 16
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
+  const int p1 = blockIdx.x * block_dim + ty;
+  const int idx = ty * 16 + tx;
+  
+  __shared__ int maxIndex[16 * 16];
+  maxIndex[idx] = 0;
   __syncthreads();
+  
+  float *corrs = NULL;
+  if (p1 < numPts1) {
+    corrs = &corrData[p1 * block_dim * 2];
+    corrs[tx] = 0.0f;
+    corrs[tx + 16] = 0.0f;
+    const float *pt1 = sift1[p1].data;
+    for (int p2 = tx; p2 < numPts2; p2 += 16) {
+      float *pt2 = sift2[p2].data;
+      float sum = 0.0f;
+      for (int i = 0; i < 128; i++) 
+	sum += pt1[i] * pt2[i];
+      if (sum > corrs[tx]) {
+	corrs[tx + 16] = corrs[tx];
+	corrs[tx] = sum;
+	maxIndex[idx] = p2;
+      }
+      else if (sum > corrs[tx + 16])
+	corrs[tx + 16] = sum;
+    }
+  }
+  __syncthreads();
+  if (p1 < numPts1) {
+    for (int len = 8; len > 0; len /= 2) {
+      if (tx < len) {
+	float val = corrs[tx + len];
+	int i = maxIndex[idx + len];
+	if (val > corrs[tx]) {
+	  corrs[tx + 16] = corrs[tx];
+	  corrs[tx] = val;
+	  maxIndex[idx] = i;
+	}
+	else if (val > corrs[tx + 16])
+	  corrs[tx + 16] = val;
+	float va2 = corrs[tx + 16 + len];
+	if (va2 > corrs[tx + 16])
+	  corrs[tx + 16] = va2;
+      }
+      __syncthreads();
+    }
+    if (tx==0) {
+      sift1[p1].score = corrs[0];
+      sift1[p1].ambiguity = corrs[16] / (corrs[0] + 1e-6);
+      sift1[p1].match = maxIndex[ty << 4];
+      sift1[p1].match_xpos = sift2[maxIndex[ty << 4]].xpos;
+      sift1[p1].match_ypos = sift2[maxIndex[ty << 4]].ypos;
+    }
+  }
 }
 
 #define FMC2W 16
-#define FMC2H 8
+#define FMC2H 4
 
 __global__ void FindMaxCorr2(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
 {
@@ -210,85 +233,13 @@ __global__ void FindMaxCorr2(SiftPoint *sift1, SiftPoint *sift2, int numPts1, in
     }
     __syncthreads();
   }
-  if (ty==0) {
-    if (tx==6)
-      sift1[p1].score = maxScore[0];
-    if (tx==7)
-      sift1[p1].ambiguity = maxScor2[0] / (maxScore[0] + 1e-6);
-    if (tx==8)
-      sift1[p1].match = maxIndex[0];
-    if (tx==9)
-      sift1[p1].match_xpos = sift2[maxIndex[0]].xpos;
-    if (tx==10)
-      sift1[p1].match_ypos = sift2[maxIndex[0]].ypos;
+  if (ty==0 && tx==0) {
+    sift1[p1].score = maxScore[0];
+    sift1[p1].ambiguity = maxScor2[0] / (maxScore[0] + 1e-6);
+    sift1[p1].match = maxIndex[0];
+    sift1[p1].match_xpos = sift2[maxIndex[0]].xpos;
+    sift1[p1].match_ypos = sift2[maxIndex[0]].ypos;
   }
-  __syncthreads();
-}
-
-// Version based on suggestion by Nicholas Lin
-__global__ void FindMaxCorr3(float *corrData, SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
-{
-  int block_dim = blockDim.x; // blockDim.x == 16
-  const int tx = threadIdx.x;
-  const int ty = threadIdx.y;
-  const int p1 = blockIdx.x * block_dim + ty;
-  const int idx = ty * 16 + tx;
-  
-  __shared__ int maxIndex[16 * 16];
-  maxIndex[idx] = 0;
-  __syncthreads();
-  
-  float *corrs = NULL;
-  if (p1 < numPts1) {
-    corrs = &corrData[p1 * block_dim * 2];
-    corrs[tx] = 0.0f;
-    corrs[tx + 16] = 0.0f;
-    const float *pt1 = sift1[p1].data;
-    for (int p2 = tx; p2 < numPts2; p2 += 16) {
-      float *pt2 = sift2[p2].data;
-      float sum = 0.0f;
-      for (int i = 0; i < 128; i++) 
-	sum += pt1[i] * pt2[i];
-      if (sum > corrs[tx]) {
-	corrs[tx + 16] = corrs[tx];
-	corrs[tx] = sum;
-	maxIndex[idx] = p2;
-      }
-      else if (sum > corrs[tx + 16])
-	corrs[tx + 16] = sum;
-    }
-  }
-  __syncthreads();
-  if (p1 < numPts1) {
-    for (int len = 8; len > 0; len /= 2) {
-      if (tx < len) {
-	float val = corrs[tx + len];
-	int i = maxIndex[idx + len];
-	if (val > corrs[tx]) {
-	  corrs[tx + 16] = corrs[tx];
-	  corrs[tx] = val;
-	  maxIndex[idx] = i;
-	}
-	else if (val > corrs[tx + 16])
-	  corrs[tx + 16] = val;
-	float va2 = corrs[tx + 16 + len];
-	if (va2 > corrs[tx + 16])
-	  corrs[tx + 16] = va2;
-      }
-      __syncthreads();
-    }
-    if (tx == 6)
-      sift1[p1].score = corrs[0];
-    else if (tx == 7)
-      sift1[p1].ambiguity = corrs[16] / (corrs[0] + 1e-6);
-    else if (tx == 8)
-      sift1[p1].match = maxIndex[ty << 4];
-    else if (tx == 9)
-      sift1[p1].match_xpos = sift2[maxIndex[ty << 4]].xpos;
-    else if (tx == 10)
-      sift1[p1].match_ypos = sift2[maxIndex[ty << 4]].ypos;
-  }
-  __syncthreads();
 }
 
 __global__ void FindMaxCorr4(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
@@ -325,6 +276,7 @@ __global__ void FindMaxCorr4(SiftPoint *sift1, SiftPoint *sift2, int numPts1, in
 	maxScor2[ty] = sum;
     }
   }
+  __syncthreads();
   if (tx==0) {
     sift1[p1].score = maxScore[ty];
     sift1[p1].ambiguity = maxScor2[ty] / (maxScore[ty] + 1e-6);
@@ -334,6 +286,76 @@ __global__ void FindMaxCorr4(SiftPoint *sift1, SiftPoint *sift2, int numPts1, in
   }
 }
 
+
+__global__ void CleanMatches(SiftPoint *sift1, int numPts1)
+{
+  const int p1 = min(blockIdx.x*64 + threadIdx.x, numPts1-1);
+  sift1[p1].score = 0.0f;
+}
+
+__device__ volatile int lock = 0;
+  
+__global__ void FindMaxCorr5(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
+{
+  __shared__ float siftParts1[17*16]; // features in columns
+  __shared__ float siftParts2[17*16]; // one extra to about shared conflicts
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
+  const int p1l = min(blockIdx.x*16 + ty, numPts1-1);
+  const float *pt1l = sift1[p1l].data;
+  float maxScore = -1.0f;
+  float maxScor2 = -1.0f;
+  int maxIndex = 0;
+  for (int k=0;k<512/16;k++) {
+    const int p2l = min(blockIdx.y*512 + k*16 + ty, numPts2-1);
+    const float *pt2l = sift2[p2l].data;
+    float sum = 0.0f;
+    for (int i=0;i<8;i++) {
+      siftParts1[17*tx + ty] = pt1l[i*16 + tx]; // load and transpose
+      siftParts2[17*tx + ty] = pt2l[i*16 + tx];
+      __syncthreads();
+      for (int j=0;j<16;j++)
+	sum += siftParts1[17*j + tx] * siftParts2[17*j + ty];
+      __syncthreads();
+    }
+    float *sums = siftParts1;
+    sums[16*ty + tx] = sum;
+    __syncthreads();
+    if (ty==0) { 
+      for (int j=0;j<16;j++) {
+	float sum = sums[16*j + tx];
+	if (sum>maxScore) { 
+	  maxScor2 = maxScore;
+	  maxScore = sum;
+	  maxIndex = min(blockIdx.y*512 +  k*16 + j, numPts2-1);
+	} else if (sum>maxScor2)
+	  maxScor2 = sum;
+      }
+    }
+    __syncthreads();
+  }
+  const int p1 = min(blockIdx.x*16 + tx, numPts1-1);
+  if (tx==0 && ty==0)
+    while (atomicCAS((int *)&lock, 0, 1) != 0);
+  __syncthreads();
+  if (ty==0) {
+    float maxScor2Old = sift1[p1].ambiguity*(sift1[p1].score + 1e-6);
+    if (maxScore>sift1[p1].score) {
+      maxScor2 = max(sift1[p1].score, maxScor2);
+      sift1[p1].ambiguity = maxScor2 / (maxScore + 1e-6);
+      sift1[p1].score = maxScore;
+      sift1[p1].match = maxIndex;
+      sift1[p1].match_xpos = sift2[maxIndex].xpos;
+      sift1[p1].match_ypos = sift2[maxIndex].ypos;
+    } else if (maxScore>maxScor2Old)
+      sift1[p1].ambiguity = maxScore / (sift1[p1].score + 1e-6);
+  }
+  __syncthreads();
+  if (tx==0 && ty==0)
+    atomicExch((int* )&lock, 0);
+}
+ 
+  
 template <int size>
 __device__ void InvertMatrix(float elem[size][size], float res[size][size]) 
 {  
@@ -602,6 +624,7 @@ double FindHomography(SiftData &data, float *homography, int *numMatches, int nu
   return gpuTime;
 }
 
+
 double MatchSiftData(SiftData &data1, SiftData &data2)
 {
   TimerGPU timer(0);
@@ -621,16 +644,16 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
   
 // Original version with correlation and maximization in two different kernels
 // Global memory reguirement: O(N^2)
-#if 0 
+#if 0
   float *d_corrData; 
   int corrWidth = iDivUp(numPts2, 16)*16;
   int corrSize = sizeof(float)*numPts1*corrWidth;
   safeCall(cudaMalloc((void **)&d_corrData, corrSize));
-#if 0
+#if 0 // K40c 10.9ms, 1080 Ti 3.8ms
   dim3 blocks1(numPts1, iDivUp(numPts2, 16));
   dim3 threads1(16, 16); // each block: 1 points x 16 points
   MatchSiftPoints<<<blocks1, threads1>>>(sift1, sift2, d_corrData, numPts1, numPts2);
-#else
+#else // K40c 7.6ms, 1080 Ti 1.4ms
   dim3 blocks(iDivUp(numPts1,16), iDivUp(numPts2, 16));
   dim3 threads(16, 16); // each block: 16 points x 16 points
   MatchSiftPoints2<<<blocks, threads>>>(sift1, sift2, d_corrData, numPts1, numPts2);
@@ -640,43 +663,53 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
   dim3 threadsMax(16, 16);
   FindMaxCorr<<<blocksMax, threadsMax>>>(d_corrData, sift1, sift2, numPts1, corrWidth, sizeof(SiftPoint));
   safeCall(cudaThreadSynchronize());
-  checkMsg("MatchSiftPoints() execution failed\n");
+  checkMsg("FindMaxCorr() execution failed\n");
   safeCall(cudaFree(d_corrData));
 #endif
 
 // Version suggested by Nicholas Lin with combined correlation and maximization
 // Global memory reguirement: O(N)
-#if 0
+#if 0 // K40c 51.2ms, 1080 Ti 9.6ms
   int block_dim = 16;
   float *d_corrData;
   int corrSize = numPts1 * block_dim * 2;
   safeCall(cudaMalloc((void **)&d_corrData, sizeof(float) * corrSize));
   dim3 blocks(iDivUp(numPts1, block_dim));
-  dim3 threads(block_dim, block_dim); // each block: 1 points x 16 points
+  dim3 threads(block_dim, block_dim); 
   FindMaxCorr3<<<blocks, threads >>>(d_corrData, sift1, sift2, numPts1, numPts2);
   safeCall(cudaThreadSynchronize());
-  checkMsg("MatchSiftPoints() execution failed\n");
+  checkMsg("FindMaxCorr3() execution failed\n");
   safeCall(cudaFree(d_corrData));
 #endif
 
 // Combined version with no global memory requirement using one 1 point per block
-#if 0
+#if 0 // K40c 8.9ms, 1080 Ti 2.1ms
   dim3 blocksMax(numPts1);
   dim3 threadsMax(FMC2W, FMC2H);
   FindMaxCorr2<<<blocksMax, threadsMax>>>(sift1, sift2, numPts1, numPts2);
   safeCall(cudaThreadSynchronize());
-  checkMsg("MatchSiftPoints() execution failed\n");
+  checkMsg("FindMaxCorr2() execution failed\n");
 #endif
   
 // Combined version with no global memory requirement using one FMC2H points per block
-#if 1
-  dim3 blocksMax(iDivUp(numPts1, FMC2H));
-  dim3 threadsMax(FMC2W, FMC2H);
-  FindMaxCorr4<<<blocksMax, threadsMax>>>(sift1, sift2, numPts1, numPts2);
+#if 0 // K40c 9.2ms, 1080 Ti 1.3ms
+  dim3 blocksMax2(iDivUp(numPts1, FMC2H));
+  dim3 threadsMax2(FMC2W, FMC2H);
+  FindMaxCorr4<<<blocksMax2, threadsMax2>>>(sift1, sift2, numPts1, numPts2);
   safeCall(cudaThreadSynchronize());
-  checkMsg("MatchSiftPoints() execution failed\n");
+  checkMsg("FindMaxCorr4() execution failed\n");
 #endif
-  
+
+// Combined version with no global memory requirement using global locks
+#if 1 // K40c 5.0ms, 1080 Ti 1.2ms
+  CleanMatches<<<iDivUp(numPts1, 64), 64>>>(sift1, numPts1);
+  dim3 blocksMax3(iDivUp(numPts1, 16), iDivUp(numPts2, 512));
+  dim3 threadsMax3(16, 16);
+  FindMaxCorr5<<<blocksMax3, threadsMax3>>>(sift1, sift2, numPts1, numPts2);
+  safeCall(cudaThreadSynchronize());
+  checkMsg("FindMaxCorr5() execution failed\n");
+#endif
+
 
   if (data1.h_data!=NULL) {
     float *h_ptr = &data1.h_data[0].score;
@@ -685,7 +718,7 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
   }
 
   double gpuTime = timer.read();
-#ifdef VERBOSE
+#ifndef VERBOSE
   printf("MatchSiftData time =          %.2f ms\n", gpuTime);
 #endif
   return gpuTime;
