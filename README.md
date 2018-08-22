@@ -17,8 +17,8 @@ About every 2nd year, I try to update the code to gain even more speed through f
 |         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
 | Pascal  | GeForce GTX 1080 Ti |   0.7  |     1.0  |	10609    |  484    |   1.0*|
-| Pascal  | GeForce GTX 1060    |   1.6  |     2.4  |	3855    |  192    |   3.4 |
-| Maxwell | GeForce GTX 970     |   1.9  |     2.8  |    3494    |  224    |   4.5 |
+| Pascal  | GeForce GTX 1060    |   1.6  |     2.4  |	3855    |  192    |   2.2*|
+| Maxwell | GeForce GTX 970     |   1.9  |     2.8  |    3494    |  224    |   2.5*|
 | Kepler  | Tesla K40c          |   3.1  |     4.7  |    4291    |  288    |   4.7*|
 | Kepler  | GeForce GTX TITAN   |   2.9  |     4.3  |    4500    |  288    |   9.5 |
 
