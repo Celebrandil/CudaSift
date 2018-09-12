@@ -22,6 +22,13 @@ About every 2nd year, I try to update the code to gain even more speed through f
 | Kepler  | Tesla K40c          |   3.1  |     4.7  |    4291    |  288    |   4.7 |
 | Kepler  | GeForce GTX TITAN   |   2.9  |     4.3  |    4500    |  288    |   4.5 |
 
+Latest result of version under test:
+
+|         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
+| ------- | ------------------- | -------| ---------| ---------- | --------|--------|
+| Pascal  | GeForce GTX 1080 Ti |   0.6* |     0.8* |	10609    |  484    |   1.0 |
+| Kepler  | Tesla K40c          |   2.4* |     3.4* |    4291    |  288    |   4.7 |
+
 Matching is done between two sets of 1818 and 1978 features respectively. 
 
 It's questionable whether further optimization really makes sense, given that the cost of just transfering an 1920x1080 pixel image to the device takes about 1.4 ms on a GTX 1080 Ti. Even if the brute force feature matcher is not much faster than earlier versions, it does not have the same O(N^2) temporary memory overhead, which is preferable if there are many features.
