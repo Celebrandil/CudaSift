@@ -27,6 +27,8 @@ Latest result of version under test:
 |         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
 | Pascal  | GeForce GTX 1080 Ti |   0.6* |     0.8* |	10609    |  484    |   1.0 |
+| Pascal  | GeForce GTX 1060    |   1.2* |     1.7* |	3855    |  192    |   2.2 |
+| Maxwell | GeForce GTX 970     |   1.3* |     1.8* |    3494    |  224    |   2.5 |
 | Kepler  | Tesla K40c          |   2.4* |     3.4* |    4291    |  288    |   4.7 |
 
 Matching is done between two sets of 1818 and 1978 features respectively. 
