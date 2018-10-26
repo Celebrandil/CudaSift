@@ -10,6 +10,21 @@ The code is free to use for non-commercial applications. If you use the code for
 
 M. Bj&ouml;rkman, N. Bergstr&ouml;m and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. [ScienceDirect](http://www.sciencedirect.com/science/article/pii/S107731421300194X)
 
+## New version for Pascal (2018-10-26)
+
+There is a new version optimized for Pascal cards, but it should work also on many older cards. Since it includes some bug fixes that changes slightly how features are extracted, which might affect matching to features extracted using an older version, the changes are kept in a new branch (Pascal). The fixes include a small change in ScaleDown that corrects an odd behaviour for images with heights not divisible by 2^(#octaves). The second change is a correction of an improper shift of (0.5,0.5) pixels, when pixel values were read from the image to create a descriptor. 
+
+Latest result of version under test:
+
+|         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
+| ------- | ------------------- | -------| ---------| ---------- | --------|--------|
+| Pascal  | GeForce GTX 1080 Ti |   0.6* |     0.8* |	10609    |  484    |   1.0 |
+| Pascal  | GeForce GTX 1060    |   1.2* |     1.7* |	3855    |  192    |   2.2 |
+| Maxwell | GeForce GTX 970     |   1.3* |     1.8* |    3494    |  224    |   2.5 |
+| Kepler  | Tesla K40c          |   2.4* |     3.4* |    4291    |  288    |   4.7 |
+
+Matching is done between two sets of 1911 and 2086 features respectively. 
+
 ## Benchmarking of new version (2018-08-22)
 
 About every 2nd year, I try to update the code to gain even more speed through further optimization. Here are some results for a new version of the code. Improvements in speed have primarilly been gained by reducing communication between host and device, better balancing the load on caches, shared and global memory, and increasing the workload of each thread block.
@@ -21,15 +36,6 @@ About every 2nd year, I try to update the code to gain even more speed through f
 | Maxwell | GeForce GTX 970     |   1.9  |     2.8  |    3494    |  224    |   2.5 |
 | Kepler  | Tesla K40c          |   3.1  |     4.7  |    4291    |  288    |   4.7 |
 | Kepler  | GeForce GTX TITAN   |   2.9  |     4.3  |    4500    |  288    |   4.5 |
-
-Latest result of version under test:
-
-|         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
-| ------- | ------------------- | -------| ---------| ---------- | --------|--------|
-| Pascal  | GeForce GTX 1080 Ti |   0.6* |     0.8* |	10609    |  484    |   1.0 |
-| Pascal  | GeForce GTX 1060    |   1.2* |     1.7* |	3855    |  192    |   2.2 |
-| Maxwell | GeForce GTX 970     |   1.3* |     1.8* |    3494    |  224    |   2.5 |
-| Kepler  | Tesla K40c          |   2.4* |     3.4* |    4291    |  288    |   4.7 |
 
 Matching is done between two sets of 1818 and 1978 features respectively. 
 
