@@ -14,7 +14,7 @@ M. Bj&ouml;rkman, N. Bergstr&ouml;m and D. Kragic, "Detecting, segmenting and tr
 
 There is a new version optimized for Pascal cards, but it should work also on many older cards. Since it includes some bug fixes that changes slightly how features are extracted, which might affect matching to features extracted using an older version, the changes are kept in a new branch (Pascal). The fixes include a small change in ScaleDown that corrects an odd behaviour for images with heights not divisible by 2^(#octaves). The second change is a correction of an improper shift of (0.5,0.5) pixels, when pixel values were read from the image to create a descriptor. 
 
-Then there are some improvements in terms of speed, especially in the Laplace function, that detects DoG features, and the LowPass function, that is seen as preprocessing and is not included in the benchmarking below. Somewhat surprisingly, even if optimizations were done with respect to Pascal cards, the improvement were even better for older cards. The changes involve trying to make each CUDA thread have more work to do, using fewer thread blocks. 
+Then there are some improvements in terms of speed, especially in the Laplace function, that detects DoG features, and the LowPass function, that is seen as preprocessing and is not included in the benchmarking below. Somewhat surprisingly, even if optimizations were done with respect to Pascal cards, these improvements were even better for older cards. The changes involve trying to make each CUDA thread have more work to do, using fewer thread blocks. For typical images of today, there will be enough blocks to feed the streaming multiprocessors anyway.
 
 Latest result of version under test:
 
