@@ -1,4 +1,3 @@
-#include <cuda_runtime_api.h>
 #include "cudaSift.h"
 #include "cudautils.h"
 
@@ -339,16 +338,16 @@ __global__ void FindMaxCorr5(SiftPoint *sift1, SiftPoint *sift2, int numPts1, in
     while (atomicCAS((int *)&lock, 0, 1) != 0);
   __syncthreads();
   if (ty==0) {
-    float maxScor2Old = sift1[p1].ambiguity*(sift1[p1].score + 1e-6);
+    float maxScor2Old = sift1[p1].ambiguity*(sift1[p1].score + 1e-6f);
     if (maxScore>sift1[p1].score) {
       maxScor2 = max(sift1[p1].score, maxScor2);
-      sift1[p1].ambiguity = maxScor2 / (maxScore + 1e-6);
+      sift1[p1].ambiguity = maxScor2 / (maxScore + 1e-6f);
       sift1[p1].score = maxScore;
       sift1[p1].match = maxIndex;
       sift1[p1].match_xpos = sift2[maxIndex].xpos;
       sift1[p1].match_ypos = sift2[maxIndex].ypos;
     } else if (maxScore>maxScor2Old)
-      sift1[p1].ambiguity = maxScore / (sift1[p1].score + 1e-6);
+      sift1[p1].ambiguity = maxScore / (sift1[p1].score + 1e-6f);
   }
   __syncthreads();
   if (tx==0 && ty==0)

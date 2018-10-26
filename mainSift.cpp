@@ -39,6 +39,7 @@ int main(int argc, char **argv)
     cv::imread("data/img1.png", 0).convertTo(limg, CV_32FC1);
     cv::imread("data/img2.png", 0).convertTo(rimg, CV_32FC1);
   }
+  //cv::flip(limg, rimg, -1);
   unsigned int w = limg.cols;
   unsigned int h = limg.rows;
   std::cout << "Image size = (" << w << "," << h << ")" << std::endl;
@@ -62,14 +63,14 @@ int main(int argc, char **argv)
   // A bit of benchmarking 
   //for (int thresh1=1.00f;thresh1<=4.01f;thresh1+=0.50f) {
   float *memoryTmp = AllocSiftTempMemory(w, h, 5, false);
-    for (int i=0;i<1;i++) {
+    for (int i=0;i<1000;i++) {
       ExtractSift(siftData1, img1, 5, initBlur, thresh, 0.0f, false, memoryTmp);
       ExtractSift(siftData2, img2, 5, initBlur, thresh, 0.0f, false, memoryTmp);
     }
     FreeSiftTempMemory(memoryTmp);
     
     // Match Sift features and find a homography
-    for (int i=0;i<500;i++)
+    for (int i=0;i<1;i++)
       MatchSiftData(siftData1, siftData2);
     float homography[9];
     int numMatches;
@@ -84,6 +85,8 @@ int main(int argc, char **argv)
   PrintMatchData(siftData1, siftData2, img1);
   cv::imwrite("data/limg_pts.pgm", limg);
 
+  //MatchAll(siftData1, siftData2, homography);
+  
   // Free Sift data from device
   FreeSiftData(siftData1);
   FreeSiftData(siftData2);
@@ -101,9 +104,15 @@ void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography)
   int numPts1 = siftData1.numPts;
   int numPts2 = siftData2.numPts;
   int numFound = 0;
+#if 1
+  homography[0] = homography[4] = -1.0f;
+  homography[1] = homography[3] = homography[6] = homography[7] = 0.0f;
+  homography[2] = 1279.0f;
+  homography[5] = 959.0f;
+#endif
   for (int i=0;i<numPts1;i++) {
     float *data1 = sift1[i].data;
-    std::cout << i << ":" << sift1[i].scale << ":" << (int)sift1[i].orientation << std::endl;
+    std::cout << i << ":" << sift1[i].scale << ":" << (int)sift1[i].orientation << " " << sift1[i].xpos << " " << sift1[i].ypos << std::endl;
     bool found = false;
     for (int j=0;j<numPts2;j++) {
       float *data2 = sift2[j].data;
@@ -114,9 +123,9 @@ void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography)
       float dx = (homography[0]*sift1[i].xpos + homography[1]*sift1[i].ypos + homography[2]) / den - sift2[j].xpos;
       float dy = (homography[3]*sift1[i].xpos + homography[4]*sift1[i].ypos + homography[5]) / den - sift2[j].ypos;
       float err = dx*dx + dy*dy;
-      if (err<100.0f)
+      if (err<100.0f) // 100.0
 	found = true;
-      if (err<100.0f || j==sift1[i].match) {
+      if (err<100.0f || j==sift1[i].match) { // 100.0
 	if (j==sift1[i].match && err<100.0f)
 	  std::cout << " *";
 	else if (j==sift1[i].match) 
@@ -125,14 +134,17 @@ void MatchAll(SiftData &siftData1, SiftData &siftData2, float *homography)
 	  std::cout << " +";
 	else
 	  std::cout << "  ";
-	std::cout << j << ":" << sum << ":" << (int)sqrt(err) << ":" << sift2[j].scale << ":" << (int)sift2[j].orientation << std::endl;
+	std::cout << j << ":" << sum << ":" << (int)sqrt(err) << ":" << sift2[j].scale << ":" << (int)sift2[j].orientation << " " << sift2[j].xpos << " " << sift2[j].ypos << " " << (int)dx << " " << (int)dy << std::endl;
       }
     }
     std::cout << std::endl;
     if (found)
       numFound++;
   }
-  std::cout << "Number of founds: " << numFound << std::endl;
+  std::cout << "Number of finds: " << numFound << " / " << numPts1 << std::endl;
+  std::cout << homography[0] << " " << homography[1] << " " << homography[2] << std::endl;//%%%
+  std::cout << homography[3] << " " << homography[4] << " " << homography[5] << std::endl;//%%%
+  std::cout << homography[6] << " " << homography[7] << " " << homography[8] << std::endl;//%%%
 }
 
 void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img)
@@ -164,12 +176,14 @@ void PrintMatchData(SiftData &siftData1, SiftData &siftData2, CudaImage &img)
 	std::cout << " delta=(" << (int)dx << "," << (int)dy << ")" << std::endl;
       }
 #endif
+#if 1
       int len = (int)(fabs(dx)>fabs(dy) ? fabs(dx) : fabs(dy));
       for (int l=0;l<len;l++) {
 	int x = (int)(sift1[j].xpos + dx*l/len);
 	int y = (int)(sift1[j].ypos + dy*l/len);
 	h_img[y*w+x] = 255.0f;
-      }	
+      }
+#endif
     }
     int x = (int)(sift1[j].xpos+0.5);
     int y = (int)(sift1[j].ypos+0.5);

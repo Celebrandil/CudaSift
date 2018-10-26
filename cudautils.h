@@ -106,13 +106,33 @@ public:
   }
 };
 
-static __device__ __inline__ float ShiftDown(float var, unsigned int delta) {
+template <class T>
+__device__ __inline__ T ShiftDown(T var, unsigned int delta, int width = 32) {
 #if (CUDART_VERSION >= 9000)
-  return __shfl_down_sync(0xffffffff, var, delta);
+  return __shfl_down_sync(0xffffffff, var, delta, width);
 #else
-  return __shfl_down(var, delta);
+  return __shfl_down(var, delta, width);
 #endif
 }
+
+template <class T>
+__device__ __inline__ T ShiftUp(T var, unsigned int delta, int width = 32) {
+#if (CUDART_VERSION >= 9000)
+  return __shfl_up_sync(0xffffffff, var, delta, width);
+#else
+  return __shfl_up(var, delta, width);
+#endif
+}
+
+template <class T>
+__device__ __inline__ T Shuffle(T var, unsigned int lane, int width = 32) {
+#if (CUDART_VERSION >= 9000)
+  return __shfl_sync(0xffffffff, var, lane, width);
+#else
+  return __shfl(var, lane, width);
+#endif
+}
+
 
 #endif
 
