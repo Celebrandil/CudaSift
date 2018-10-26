@@ -2,7 +2,7 @@
 
 This is the fourth version of a SIFT (Scale Invariant Feature Transform) implementation using CUDA for GPUs from NVidia. The first version is from 2007 and GPUs have evolved since then. This version is slightly more precise and considerably faster than the previous versions and has been optimized for Kepler and later generations of GPUs.
 
-On a GTX 1060 GPU the code takes about 2.7 ms on a 1280x960 pixel image and 3.8 ms on a 1920x1080 pixel image. There is also code for brute-force matching of features and homography computation that takes about 3.7 ms for two sets of around 2250 SIFT features each.
+On a GTX 1060 GPU the code takes about 1.6 ms on a 1280x960 pixel image and 2.4 ms on a 1920x1080 pixel image. There is also code for brute-force matching of features that takes about 2.2 ms for two sets of around 1900 SIFT features each.
 
 The code relies on CMake for compilation and OpenCV for image containers. OpenCV can however be quite easily changed to something else. The code can be relatively hard to read, given the way things have been parallelized for maximum speed.
 
@@ -10,9 +10,9 @@ The code is free to use for non-commercial applications. If you use the code for
 
 M. Bj&ouml;rkman, N. Bergstr&ouml;m and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. [ScienceDirect](http://www.sciencedirect.com/science/article/pii/S107731421300194X)
 
-## Benchmarking of working version undergoing tests
+## Benchmarking of new version (2018-08-22)
 
-About every 2nd year, I try to update the code to gain even more speed through further optimization. Here are some results for a version that is currently being tested. Improvements in speed have primarilly been gained by reducing communication between host and device, better balancing the load on caches, shared and global memory, and increasing the workload of each thread block.
+About every 2nd year, I try to update the code to gain even more speed through further optimization. Here are some results for a new version of the code. Improvements in speed have primarilly been gained by reducing communication between host and device, better balancing the load on caches, shared and global memory, and increasing the workload of each thread block.
 
 |         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
@@ -22,13 +22,22 @@ About every 2nd year, I try to update the code to gain even more speed through f
 | Kepler  | Tesla K40c          |   3.1  |     4.7  |    4291    |  288    |   4.7 |
 | Kepler  | GeForce GTX TITAN   |   2.9  |     4.3  |    4500    |  288    |   4.5 |
 
+Latest result of version under test:
+
+|         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
+| ------- | ------------------- | -------| ---------| ---------- | --------|--------|
+| Pascal  | GeForce GTX 1080 Ti |   0.6* |     0.8* |	10609    |  484    |   1.0 |
+| Pascal  | GeForce GTX 1060    |   1.2* |     1.7* |	3855    |  192    |   2.2 |
+| Maxwell | GeForce GTX 970     |   1.3* |     1.8* |    3494    |  224    |   2.5 |
+| Kepler  | Tesla K40c          |   2.4* |     3.4* |    4291    |  288    |   4.7 |
+
 Matching is done between two sets of 1818 and 1978 features respectively. 
 
-It's questionable whether further optimization really makes sense, given that the cost of just transfering an 1920x1080 pixel image to the device takes about 1.4 ms on a GTX 1080 Ti. Even if the brute force feature matcher is not much faster than earlier versions, it does not have the same O(N^2) temporary memory overhead, which is a indeed preferable.
+It's questionable whether further optimization really makes sense, given that the cost of just transfering an 1920x1080 pixel image to the device takes about 1.4 ms on a GTX 1080 Ti. Even if the brute force feature matcher is not much faster than earlier versions, it does not have the same O(N^2) temporary memory overhead, which is preferable if there are many features.
 
-## Benchmarking
+## Benchmarking of previous version
 
-Computational cost (in milliseconds) on different GPUs (latest benchmark marked with *):
+Computational cost (in milliseconds) on different GPUs:
 
 |         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
@@ -40,7 +49,7 @@ Computational cost (in milliseconds) on different GPUs (latest benchmark marked 
 
 Matching is done between two sets of 1616 and 1769 features respectively. 
  
-The latest improvements involve a slight adaptation for Pascal, changing from textures to global memory (mostly through L2) in the most costly function LaplaceMulti. The medium-end card GTX 1060 is impressive indeed. 
+The improvements in this version involved a slight adaptation for Pascal, changing from textures to global memory (mostly through L2) in the most costly function LaplaceMulti. The medium-end card GTX 1060 is impressive indeed. 
 
 ## Usage
 
