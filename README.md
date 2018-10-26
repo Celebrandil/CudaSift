@@ -43,7 +43,7 @@ Matching is done between two sets of 1818 and 1978 features respectively.
 
 It's questionable whether further optimization really makes sense, given that the cost of just transfering an 1920x1080 pixel image to the device takes about 1.4 ms on a GTX 1080 Ti. Even if the brute force feature matcher is not much faster than earlier versions, it does not have the same O(N^2) temporary memory overhead, which is preferable if there are many features.
 
-## Benchmarking of previous version
+## Benchmarking of previous version (2017-05-24)
 
 Computational cost (in milliseconds) on different GPUs:
 
