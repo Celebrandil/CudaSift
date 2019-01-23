@@ -6,7 +6,7 @@ On a GTX 1060 GPU the code takes about 1.2 ms on a 1280x960 pixel image and 1.7 
 
 The code relies on CMake for compilation and OpenCV for image containers. OpenCV can however be quite easily changed to something else. The code can be relatively hard to read, given the way things have been parallelized for maximum speed.
 
-The code is free to use for non-commercial applications. If you use the code for research, please refer to the following paper.
+The code is free to use for non-commercial applications. If you use the code for research, please cite to the following paper.
 
 M. Bj&ouml;rkman, N. Bergstr&ouml;m and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. [ScienceDirect](http://www.sciencedirect.com/science/article/pii/S107731421300194X)
 
