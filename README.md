@@ -26,7 +26,7 @@ Latest result of version under test:
 | Maxwell | GeForce GTX 970     |   1.3 |     1.8 |    3494    |  224    |   2.5 |
 | Kepler  | Tesla K40c          |   2.4 |     3.4 |    4291    |  288    |   4.7 |
 
-Matching is done between two sets of 1911 and 2086 features respectively. 
+Matching is done between two sets of 1911 and 2086 features respectively. A star indicates results from the last checked in version.
 
 ## Benchmarking of new version (2018-08-22)
 
