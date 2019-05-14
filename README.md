@@ -101,7 +101,7 @@ The requirements on number and quality of features vary from application to appl
 
 In many cases the most fine-scale features are of little use, especially when noise conditions are severe or when features are matched between very different views. In such cases the most fine-scale features can be pruned by setting *minScale* to the minimum acceptable feature scale, where 1.0 corresponds to the original image scale without upscaling. As a consequence of pruning the computational cost can also be reduced.
 
-To increase the number of SIFT features, but also increase the computational cost, the original image can be automatically upscaled to double the size using the *upScale* parameter, in accordings with Lowe's recommendations. One should keep in mind though that by doing so the fraction of features that can be matched tend to go down, even if the total number of extracted features increases significantly. If it's enough to instead reduce the *thresh* parameter to get more features, that is often a better alternative.
+To increase the number of SIFT features, but also increase the computational cost, the original image can be automatically upscaled to double the size using the *upScale* parameter, in accordance to Lowe's recommendations. One should keep in mind though that by doing so the fraction of features that can be matched tend to go down, even if the total number of extracted features increases significantly. If it's enough to instead reduce the *thresh* parameter to get more features, that is often a better alternative.
 
 Results without upscaling (upScale=False) of 1280x960 pixel input image. 
 
