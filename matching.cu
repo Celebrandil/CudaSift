@@ -293,11 +293,371 @@ __global__ void CleanMatches(SiftPoint *sift1, int numPts1)
 }
 
 __device__ volatile int lock = 0;
-  
+
+#define FMC_GH  512
+#define FMC_BW   32
+#define FMC_BH   32
+#define FMC_BD   16
+#define FMC_TW    1
+#define FMC_TH    4
+#define FMC_NW   (FMC_BW/FMC_TW)   //  32
+#define FMC_NH   (FMC_BH/FMC_TH)   //   8
+#define FMC_NT   (FMC_NW*FMC_NH)   // 256 = 8 warps
+
+
+__global__ void FindMaxCorr9(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
+{
+  __shared__ float4 siftParts1[FMC_BW*FMC_BD]; // 4*32*8 = 1024
+  __shared__ float4 siftParts2[FMC_BH*FMC_BD]; // 4*32*8 = 1024
+  //__shared__ float blksums[FMC_BW*FMC_BH];     // 32*32  = 1024
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
+  const int idx = ty*FMC_NW + tx;
+  float4 *pts1 = 0, *pts2 = 0;
+  if (idx<FMC_BW) {
+    const int p1l = min(blockIdx.x*FMC_BW + idx, numPts1-1);
+    pts1 = (float4*)sift1[p1l].data;
+  }
+  float maxScore = -1.0f;
+  float maxScor2 = -1.0f;
+  int maxIndex = 0;
+  for (int k=0;k<min(FMC_GH, numPts2 - FMC_BH + 1);k+=FMC_BH) {
+    if (idx<FMC_BH) {
+      const int p2l = min(blockIdx.y*FMC_GH + k + idx, numPts2-1);
+      pts2 = (float4*)sift2[p2l].data;
+    }
+    float sums[FMC_TW*FMC_TH];
+    for (int i=0;i<FMC_TW*FMC_TH;i++) 
+      sums[i] = 0.0f;
+
+    if (idx<FMC_BW)
+      for (int i=0;i<FMC_BD/2;i++) 
+	siftParts1[(i + 0)*FMC_BW + idx] = pts1[0 + i];
+    if (idx<FMC_BH)
+      for (int i=0;i<FMC_BD/2;i++) 
+	siftParts2[(i + 0)*FMC_BH + idx] = pts2[0 + i];
+    __syncthreads();
+    
+    int b = FMC_BD/2;
+    for (int d=FMC_BD/2;d<32;d+=FMC_BD/2) {
+      if (idx<FMC_BW)
+	for (int i=0;i<FMC_BD/2;i++) 
+	  siftParts1[(i + b)*FMC_BW + idx] = pts1[d + i];
+      if (idx<FMC_BH)
+	for (int i=0;i<FMC_BD/2;i++) 
+	  siftParts2[(i + b)*FMC_BH + idx] = pts2[d + i];
+
+      b ^= FMC_BD/2;
+      for (int i=0;i<FMC_BD/2;i++) {
+	float4 v1[FMC_TW];
+	for (int ix=0;ix<FMC_TW;ix++)
+	  v1[ix] = siftParts1[(i + b)*FMC_BW + (tx*FMC_TW + ix)];
+	for (int iy=0;iy<FMC_TH;iy++) {
+	  float4 v2 = siftParts2[(i + b)*FMC_BH + (ty*FMC_TH + iy)];
+	  for (int ix=0;ix<FMC_TW;ix++) {
+	    sums[iy*FMC_TW + ix] += v1[ix].x * v2.x;
+	    sums[iy*FMC_TW + ix] += v1[ix].y * v2.y;
+	    sums[iy*FMC_TW + ix] += v1[ix].z * v2.z;
+	    sums[iy*FMC_TW + ix] += v1[ix].w * v2.w;
+	  }
+	}
+      }
+      __syncthreads();
+    }
+    
+    b ^= FMC_BD/2;
+    for (int i=0;i<FMC_BD/2;i++) {
+      float4 v1[FMC_TW];
+      for (int ix=0;ix<FMC_TW;ix++)
+	v1[ix] = siftParts1[(i + b)*FMC_BW + (tx*FMC_TW + ix)];
+      for (int iy=0;iy<FMC_TH;iy++) {
+	float4 v2 = siftParts2[(i + b)*FMC_BH + (ty*FMC_TH + iy)];
+	for (int ix=0;ix<FMC_TW;ix++) {
+	  sums[iy*FMC_TW + ix] += v1[ix].x * v2.x;
+	  sums[iy*FMC_TW + ix] += v1[ix].y * v2.y;
+	  sums[iy*FMC_TW + ix] += v1[ix].z * v2.z;
+	  sums[iy*FMC_TW + ix] += v1[ix].w * v2.w;
+	}
+      }
+    }
+    __syncthreads();
+    
+    float *blksums = (float*)siftParts1;
+    for (int iy=0;iy<FMC_TH;iy++) 
+      for (int ix=0;ix<FMC_TW;ix++) 
+	blksums[(ty*FMC_TH + iy)*FMC_BW + (tx*FMC_TW + ix)] = sums[iy*FMC_TW + ix];
+    __syncthreads();
+    if (idx<FMC_BW) { 
+      for (int j=0;j<FMC_BH;j++) {
+	float sum = blksums[j*FMC_BW + idx];
+	if (sum>maxScore) { 
+	  maxScor2 = maxScore;
+	  maxScore = sum;
+	  maxIndex = min(blockIdx.y*FMC_GH + k + j, numPts2-1);
+	} else if (sum>maxScor2)
+	  maxScor2 = sum;
+      }
+    }
+    __syncthreads();
+  }
+  const int p1 = min(blockIdx.x*FMC_BW + idx, numPts1-1);
+  if (idx==0)
+    while (atomicCAS((int *)&lock, 0, 1) != 0);
+  __syncthreads();
+  if (idx<FMC_BW) {
+    float maxScor2Old = sift1[p1].ambiguity*(sift1[p1].score + 1e-6f);
+    if (maxScore>sift1[p1].score) {
+      maxScor2 = max(sift1[p1].score, maxScor2);
+      sift1[p1].ambiguity = maxScor2 / (maxScore + 1e-6f);
+      sift1[p1].score = maxScore;
+      sift1[p1].match = maxIndex;
+      sift1[p1].match_xpos = sift2[maxIndex].xpos;
+      sift1[p1].match_ypos = sift2[maxIndex].ypos;
+    } else if (maxScore>maxScor2Old)
+      sift1[p1].ambiguity = maxScore / (sift1[p1].score + 1e-6f);
+  }
+  __syncthreads();
+  if (idx==0)
+    atomicExch((int* )&lock, 0);
+}
+
+__global__ void FindMaxCorr8(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
+{
+  __shared__ float4 siftParts1[FMC_BW*FMC_BD]; // 4*32*8 = 1024
+  __shared__ float4 siftParts2[FMC_BH*FMC_BD]; // 4*32*8 = 1024
+  __shared__ float blksums[FMC_BW*FMC_BH];     // 32*32  = 1024
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
+  const int idx = ty*FMC_NW + tx;
+  float4 *pts1 = 0, *pts2 = 0;
+  if (idx<FMC_BW) {
+    const int p1l = min(blockIdx.x*FMC_BW + idx, numPts1-1);
+    pts1 = (float4*)sift1[p1l].data;
+  }
+  float maxScore = -1.0f;
+  float maxScor2 = -1.0f;
+  int maxIndex = 0;
+  for (int k=0;k<min(FMC_GH, numPts2 - FMC_BH + 1);k+=FMC_BH) {
+    if (idx<FMC_BH) {
+      const int p2l = min(blockIdx.y*FMC_GH + k + idx, numPts2-1);
+      pts2 = (float4*)sift2[p2l].data;
+    }
+    float sums[FMC_TW*FMC_TH];
+    for (int i=0;i<FMC_TW*FMC_TH;i++) 
+      sums[i] = 0.0f;
+    for (int d=0;d<32;d+=FMC_BD) {
+      if (idx<FMC_BW)
+	for (int i=0;i<FMC_BD;i++) 
+	  siftParts1[i*FMC_BW + idx] = pts1[d + i];
+      if (idx<FMC_BH)
+	for (int i=0;i<FMC_BD;i++) 
+	  siftParts2[i*FMC_BH + idx] = pts2[d + i];
+      __syncthreads();
+      
+      for (int i=0;i<FMC_BD;i++) {
+	float4 v1[FMC_TW];
+	for (int ix=0;ix<FMC_TW;ix++)
+	  v1[ix] = siftParts1[i*FMC_BW + (tx*FMC_TW + ix)];
+	for (int iy=0;iy<FMC_TH;iy++) {
+	  float4 v2 = siftParts2[i*FMC_BH + (ty*FMC_TH + iy)];
+	  for (int ix=0;ix<FMC_TW;ix++) {
+	    sums[iy*FMC_TW + ix] += v1[ix].x * v2.x;
+	    sums[iy*FMC_TW + ix] += v1[ix].y * v2.y;
+	    sums[iy*FMC_TW + ix] += v1[ix].z * v2.z;
+	    sums[iy*FMC_TW + ix] += v1[ix].w * v2.w;
+	  }
+	}
+      }
+      __syncthreads();
+    }
+    //float *blksums = (float*)siftParts1;
+    for (int iy=0;iy<FMC_TH;iy++) 
+      for (int ix=0;ix<FMC_TW;ix++) 
+	blksums[(ty*FMC_TH + iy)*FMC_BW + (tx*FMC_TW + ix)] = sums[iy*FMC_TW + ix];
+    __syncthreads();
+    if (idx<FMC_BW) { 
+      for (int j=0;j<FMC_BH;j++) {
+	float sum = blksums[j*FMC_BW + idx];
+	if (sum>maxScore) { 
+	  maxScor2 = maxScore;
+	  maxScore = sum;
+	  maxIndex = min(blockIdx.y*FMC_GH + k + j, numPts2-1);
+	} else if (sum>maxScor2)
+	  maxScor2 = sum;
+      }
+    }
+    __syncthreads();
+  }
+  const int p1 = min(blockIdx.x*FMC_BW + idx, numPts1-1);
+  if (idx==0)
+    while (atomicCAS((int *)&lock, 0, 1) != 0);
+  __syncthreads();
+  if (idx<FMC_BW) {
+    float maxScor2Old = sift1[p1].ambiguity*(sift1[p1].score + 1e-6f);
+    if (maxScore>sift1[p1].score) {
+      maxScor2 = max(sift1[p1].score, maxScor2);
+      sift1[p1].ambiguity = maxScor2 / (maxScore + 1e-6f);
+      sift1[p1].score = maxScore;
+      sift1[p1].match = maxIndex;
+      sift1[p1].match_xpos = sift2[maxIndex].xpos;
+      sift1[p1].match_ypos = sift2[maxIndex].ypos;
+    } else if (maxScore>maxScor2Old)
+      sift1[p1].ambiguity = maxScore / (sift1[p1].score + 1e-6f);
+  }
+  __syncthreads();
+  if (idx==0)
+    atomicExch((int* )&lock, 0);
+}
+
+__global__ void FindMaxCorr7(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
+{
+  __shared__ float siftParts1[17*64]; // features in columns
+  __shared__ float siftParts2[16*64]; // one extra to avoid shared conflicts
+  float4 *pts1 = (float4*)siftParts1;
+  float4 *pts2 = (float4*)siftParts2;
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
+  const int p1l = min(blockIdx.x*16 + ty, numPts1-1);
+  const float4 *p1l4 = (float4*)sift1[p1l].data;
+  float maxScore = -1.0f;
+  float maxScor2 = -1.0f;
+  int maxIndex = 0;
+  for (int k=0;k<512/16;k++) {
+    const int p2l = min(blockIdx.y*512 + k*16 + ty, numPts2-1);
+    const float4 *p2l4 = (float4*)sift2[p2l].data;
+#define NUM 4
+    float sum[NUM];
+    if (ty<(16/NUM))
+      for (int l=0;l<NUM;l++)
+	sum[l] = 0.0f;
+    __syncthreads();
+    for (int i=0;i<2;i++) {
+      pts1[17*tx + ty] = p1l4[i*16 + tx];
+      pts2[16*ty + tx] = p2l4[i*16 + tx];
+      __syncthreads(); 
+      if (ty<(16/NUM)) {
+#pragma unroll
+	for (int j=0;j<16;j++) {
+	  float4 p1v = pts1[17* j + tx];
+#pragma unroll
+	  for (int l=0;l<NUM;l++) {
+	    float4 p2v = pts2[16*(ty + l*(16/NUM)) +  j];
+	    sum[l] += p1v.x * p2v.x;
+	    sum[l] += p1v.y * p2v.y;
+	    sum[l] += p1v.z * p2v.z;
+	    sum[l] += p1v.w * p2v.w;
+	  }
+	}
+      }
+      __syncthreads();
+    }
+    float *sums = siftParts1;
+    if (ty<(16/NUM))
+      for (int l=0;l<NUM;l++) 
+	sums[16*(ty + l*(16/NUM)) + tx] = sum[l];
+    __syncthreads();
+    if (ty==0) { 
+      for (int j=0;j<16;j++) {
+	float sum = sums[16*j + tx];
+	if (sum>maxScore) { 
+	  maxScor2 = maxScore;
+	  maxScore = sum;
+	  maxIndex = min(blockIdx.y*512 +  k*16 + j, numPts2-1);
+	} else if (sum>maxScor2)
+	  maxScor2 = sum;
+      }
+    }
+    __syncthreads();
+  }
+  const int p1 = min(blockIdx.x*16 + tx, numPts1-1);
+  if (tx==0 && ty==0)
+    while (atomicCAS((int *)&lock, 0, 1) != 0);
+  __syncthreads();
+  if (ty==0) {
+    float maxScor2Old = sift1[p1].ambiguity*(sift1[p1].score + 1e-6f);
+    if (maxScore>sift1[p1].score) {
+      maxScor2 = max(sift1[p1].score, maxScor2);
+      sift1[p1].ambiguity = maxScor2 / (maxScore + 1e-6f);
+      sift1[p1].score = maxScore;
+      sift1[p1].match = maxIndex;
+      sift1[p1].match_xpos = sift2[maxIndex].xpos;
+      sift1[p1].match_ypos = sift2[maxIndex].ypos;
+    } else if (maxScore>maxScor2Old)
+      sift1[p1].ambiguity = maxScore / (sift1[p1].score + 1e-6f);
+  }
+  __syncthreads();
+  if (tx==0 && ty==0)
+    atomicExch((int* )&lock, 0);
+}
+
+__global__ void FindMaxCorr6(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
+{
+  //__shared__ float siftParts1[128*16]; // features in columns
+  __shared__ float siftParts2[128*16]; // one extra to avoid shared conflicts
+  __shared__ float sums[16*16];
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
+  const int p1l = min(blockIdx.x*16 + ty, numPts1-1);
+  float *pt1l = sift1[p1l].data;
+  float4 part1 = reinterpret_cast<float4*>(pt1l)[tx];
+  float maxScore = -1.0f;
+  float maxScor2 = -1.0f;
+  int maxIndex = 0;
+  for (int k=0;k<512;k+=16) {
+    const int p2l = min(blockIdx.y*512 + k + ty, numPts2-1);
+    float *pt2l = sift2[p2l].data;
+    reinterpret_cast<float4*>(siftParts2)[32*ty + tx] = reinterpret_cast<float4*>(pt2l)[tx];
+    __syncthreads();
+    for (int i=0;i<16;i++) {
+      float4 part2 = reinterpret_cast<float4*>(siftParts2)[32*i  + tx];
+      float sum = part1.x*part2.x + part1.y*part2.y + part1.z*part2.z + part1.w*part2.w;
+      sum += ShiftDown(sum, 16);
+      sum += ShiftDown(sum, 8);
+      sum += ShiftDown(sum, 4);
+      sum += ShiftDown(sum, 2);
+      sum += ShiftDown(sum, 1);
+      if (tx==0)
+	sums[16*i + ty] = sum;
+    }
+    __syncthreads();
+    if (ty==0 && tx<16) { 
+      for (int j=0;j<16;j++) {
+	float sum = sums[16*j + tx];
+	if (sum>maxScore) { 
+	  maxScor2 = maxScore;
+	  maxScore = sum;
+	  maxIndex = min(blockIdx.y*512 +  k + j, numPts2-1);
+	} else if (sum>maxScor2)
+	  maxScor2 = sum;
+      }
+    }
+    __syncthreads();
+  }
+  if (tx==0 && ty==0)
+    while (atomicCAS((int *)&lock, 0, 1) != 0);
+  __syncthreads();
+  if (ty==0 && tx<16) {
+    const int p1 = min(blockIdx.x*16 + tx, numPts1-1);
+    float maxScor2Old = sift1[p1].ambiguity*(sift1[p1].score + 1e-6f);
+    if (maxScore>sift1[p1].score) {
+      maxScor2 = max(sift1[p1].score, maxScor2);
+      sift1[p1].ambiguity = maxScor2 / (maxScore + 1e-6f);
+      sift1[p1].score = maxScore;
+      sift1[p1].match = maxIndex;
+      sift1[p1].match_xpos = sift2[maxIndex].xpos;
+      sift1[p1].match_ypos = sift2[maxIndex].ypos;
+    } else if (maxScore>maxScor2Old)
+      sift1[p1].ambiguity = maxScore / (sift1[p1].score + 1e-6f);
+  }
+  __syncthreads();
+  if (tx==0 && ty==0)
+    atomicExch((int* )&lock, 0);
+}
+ 
 __global__ void FindMaxCorr5(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
 {
   __shared__ float siftParts1[17*16]; // features in columns
-  __shared__ float siftParts2[17*16]; // one extra to about shared conflicts
+  __shared__ float siftParts2[17*16]; // one extra to avoid shared conflicts
   const int tx = threadIdx.x;
   const int ty = threadIdx.y;
   const int p1l = min(blockIdx.x*16 + ty, numPts1-1);
@@ -354,7 +714,7 @@ __global__ void FindMaxCorr5(SiftPoint *sift1, SiftPoint *sift2, int numPts1, in
     atomicExch((int* )&lock, 0);
 }
  
-  
+
 template <int size>
 __device__ void InvertMatrix(float elem[size][size], float res[size][size]) 
 {  
@@ -594,12 +954,12 @@ double FindHomography(SiftData &data, float *homography, int *numMatches, int nu
     safeCall(cudaMemcpy2D(&d_coord[2*numPtsUp], szFl, &d_sift[0].match_xpos, szPt, szFl, numPts, cudaMemcpyDeviceToDevice));
     safeCall(cudaMemcpy2D(&d_coord[3*numPtsUp], szFl, &d_sift[0].match_ypos, szPt, szFl, numPts, cudaMemcpyDeviceToDevice));
     ComputeHomographies<<<numLoops/16, 16>>>(d_coord, d_randPts, d_homo, numPtsUp);
-    safeCall(cudaThreadSynchronize());
+    safeCall(cudaDeviceSynchronize());
     checkMsg("ComputeHomographies() execution failed\n");
     dim3 blocks(1, numLoops/TESTHOMO_LOOPS);
     dim3 threads(TESTHOMO_TESTS, TESTHOMO_LOOPS);
     TestHomographies<<<blocks, threads>>>(d_coord, d_homo, d_randPts, numPtsUp, thresh*thresh);
-    safeCall(cudaThreadSynchronize());
+    safeCall(cudaDeviceSynchronize());
     checkMsg("TestHomographies() execution failed\n");
     safeCall(cudaMemcpy(h_randPts, d_randPts, sizeof(int)*numLoops, cudaMemcpyDeviceToHost));
     int maxIndex = -1, maxCount = -1;
@@ -657,11 +1017,11 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
   dim3 threads(16, 16); // each block: 16 points x 16 points
   MatchSiftPoints2<<<blocks, threads>>>(sift1, sift2, d_corrData, numPts1, numPts2);
 #endif
-  safeCall(cudaThreadSynchronize());
+  safeCall(cudaDeviceSynchronize());
   dim3 blocksMax(iDivUp(numPts1, 16));
   dim3 threadsMax(16, 16);
   FindMaxCorr<<<blocksMax, threadsMax>>>(d_corrData, sift1, sift2, numPts1, corrWidth, sizeof(SiftPoint));
-  safeCall(cudaThreadSynchronize());
+  safeCall(cudaDeviceSynchronize());
   checkMsg("FindMaxCorr() execution failed\n");
   safeCall(cudaFree(d_corrData));
 #endif
@@ -676,39 +1036,54 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
   dim3 blocks(iDivUp(numPts1, block_dim));
   dim3 threads(block_dim, block_dim); 
   FindMaxCorr3<<<blocks, threads >>>(d_corrData, sift1, sift2, numPts1, numPts2);
-  safeCall(cudaThreadSynchronize());
+  safeCall(cudaDeviceSynchronize());
   checkMsg("FindMaxCorr3() execution failed\n");
   safeCall(cudaFree(d_corrData));
 #endif
 
 // Combined version with no global memory requirement using one 1 point per block
-#if 0 // K40c 8.9ms, 1080 Ti 2.1ms
+#if 0 // K40c 8.9ms, 1080 Ti 2.1ms, 2080 Ti 1.0ms
   dim3 blocksMax(numPts1);
   dim3 threadsMax(FMC2W, FMC2H);
   FindMaxCorr2<<<blocksMax, threadsMax>>>(sift1, sift2, numPts1, numPts2);
-  safeCall(cudaThreadSynchronize());
+  safeCall(cudaDeviceSynchronize());
   checkMsg("FindMaxCorr2() execution failed\n");
 #endif
   
 // Combined version with no global memory requirement using one FMC2H points per block
-#if 0 // K40c 9.2ms, 1080 Ti 1.3ms
+#if 0 // K40c 9.2ms, 1080 Ti 1.3ms, 2080 Ti 1.1ms
   dim3 blocksMax2(iDivUp(numPts1, FMC2H));
   dim3 threadsMax2(FMC2W, FMC2H);
   FindMaxCorr4<<<blocksMax2, threadsMax2>>>(sift1, sift2, numPts1, numPts2);
-  safeCall(cudaThreadSynchronize());
+  safeCall(cudaDeviceSynchronize());
   checkMsg("FindMaxCorr4() execution failed\n");
 #endif
 
 // Combined version with no global memory requirement using global locks
-#if 1 // K40c 5.0ms, 1080 Ti 1.2ms
-  CleanMatches<<<iDivUp(numPts1, 64), 64>>>(sift1, numPts1);
+#if 1
   dim3 blocksMax3(iDivUp(numPts1, 16), iDivUp(numPts2, 512));
   dim3 threadsMax3(16, 16);
-  FindMaxCorr5<<<blocksMax3, threadsMax3>>>(sift1, sift2, numPts1, numPts2);
-  safeCall(cudaThreadSynchronize());
+  CleanMatches<<<iDivUp(numPts1, 64), 64>>>(sift1, numPts1);
+  int mode = 9;
+  if (mode==5)// K40c 5.0ms, 1080 Ti 1.2ms, 2080 Ti 0.83ms
+    FindMaxCorr5<<<blocksMax3, threadsMax3>>>(sift1, sift2, numPts1, numPts2);
+  else if (mode==6) {                    // 2080 Ti 0.89ms
+    threadsMax3 = dim3(32, 16);
+    FindMaxCorr6<<<blocksMax3, threadsMax3>>>(sift1, sift2, numPts1, numPts2);
+  } else if (mode==7)                    // 2080 Ti 0.50ms  
+    FindMaxCorr7<<<blocksMax3, threadsMax3>>>(sift1, sift2, numPts1, numPts2);
+  else if (mode==8) {                    // 2080 Ti 0.45ms
+    blocksMax3 = dim3(iDivUp(numPts1, FMC_BW), iDivUp(numPts2, FMC_GH));
+    threadsMax3 = dim3(FMC_NW, FMC_NH);
+    FindMaxCorr8<<<blocksMax3, threadsMax3>>>(sift1, sift2, numPts1, numPts2);
+  } else if (mode==9) {                  // 2080 Ti 0.46ms
+    blocksMax3 = dim3(iDivUp(numPts1, FMC_BW), iDivUp(numPts2, FMC_GH));
+    threadsMax3 = dim3(FMC_NW, FMC_NH);
+    FindMaxCorr9<<<blocksMax3, threadsMax3>>>(sift1, sift2, numPts1, numPts2);
+  }
+  safeCall(cudaDeviceSynchronize());
   checkMsg("FindMaxCorr5() execution failed\n");
 #endif
-
 
   if (data1.h_data!=NULL) {
     float *h_ptr = &data1.h_data[0].score;
