@@ -12,7 +12,7 @@ M. Bj&ouml;rkman, N. Bergstr&ouml;m and D. Kragic, "Detecting, segmenting and tr
 
 ## Update in feature matching (2019-05-17)
 
-The brute force feature matcher has been significantly improved in speed. The largest improvements can be seen for large feature sets with 10000 features or more, but as can be seen below, it performs rather well even with just 2000 features. The file [match.pdf](https://github.com/Celebrandil/CudaSift/blob/Pascal/match.pdf) includes a description of the optimisations done. 
+The brute force feature matcher has been significantly improved in speed. The largest improvements can be seen for large feature sets with 10000 features or more, but as can be seen below, it performs rather well even with just 2000 features. The file [match.pdf](https://github.com/Celebrandil/CudaSift/blob/Pascal/match.pdf) includes a description of the optimizations done in this version.
 
 ## New version for Pascal (2018-10-26)
 
