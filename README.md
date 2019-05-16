@@ -21,7 +21,7 @@ Latest result of version under test:
 |         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
 | ------- | ------------------- | -------| ---------| ---------- | --------|--------|
 | Turing  | GeForce RTX 2080 Ti |   0.42* |     0.56* |	11750    |  616    |   0.30* |
-| Pascal  | GeForce GTX 1080 Ti |   0.56* |     0.77* |	10609    |  484    |   0.42* |
+| Pascal  | GeForce GTX 1080 Ti |   0.58* |     0.80* |	10609    |  484    |   0.42* |
 | Pascal  | GeForce GTX 1060    |   1.2 |     1.7 |	3855    |  192    |   2.2 |
 | Maxwell | GeForce GTX 970     |   1.3 |     1.8 |    3494    |  224    |   2.5 |
 | Kepler  | Tesla K40c          |   2.4 |     3.4 |    4291    |  288    |   4.7 |
