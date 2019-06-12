@@ -40,7 +40,7 @@ float *AllocSiftTempMemory(int width, int height, int numOctaves, bool scaleUp)
 {
   TimerGPU timer(0);
   const int nd = NUM_SCALES + 3;
-  int w = width*(scaleUp ? 2 : 1);
+  int w = width*(scaleUp ? 2 : 1); 
   int h = height*(scaleUp ? 2 : 1);
   int p = iAlignUp(w, 128);
   int size = h*p;                 // image sizes
@@ -215,7 +215,7 @@ void ExtractSiftOctave(SiftData &siftData, CudaImage &img, int octave, float thr
   double gpuTimeDoG = timer1.read();
   TimerGPU timer4;
 #endif
-  ComputeOrientations(texObj, siftData, octave); 
+  ComputeOrientations(texObj, img, siftData, octave); 
   ExtractSiftDescriptors(texObj, siftData, subsampling, octave); 
   //OrientAndExtract(texObj, siftData, subsampling, octave); 
   
@@ -344,20 +344,25 @@ double ScaleUp(CudaImage &res, CudaImage &src)
     return 0.0;
   }
   dim3 blocks(iDivUp(res.width, SCALEUP_W), iDivUp(res.height, SCALEUP_H));
-  dim3 threads(SCALEUP_W, SCALEUP_H);
+  dim3 threads(SCALEUP_W/2, SCALEUP_H/2);
   ScaleUp<<<blocks, threads>>>(res.d_data, src.d_data, src.width, src.pitch, src.height, res.pitch); 
   checkMsg("ScaleUp() execution failed\n");
   return 0.0;
 }   
 
-double ComputeOrientations(cudaTextureObject_t texObj, SiftData &siftData, int octave)
+double ComputeOrientations(cudaTextureObject_t texObj, CudaImage &src, SiftData &siftData, int octave)
 {
-  dim3 blocks(256); 
-  dim3 threads(128);
+  dim3 blocks(512); 
 #ifdef MANAGEDMEM
   ComputeOrientationsCONST<<<blocks, threads>>>(texObj, siftData.m_data, octave);
 #else
+#if 1
+  dim3 threads(11*11);
   ComputeOrientationsCONST<<<blocks, threads>>>(texObj, siftData.d_data, octave);
+#else
+  dim3 threads(256); 
+  ComputeOrientationsCONSTNew<<<blocks, threads>>>(src.d_data, src.width, src.pitch, src.height, siftData.d_data, octave);
+#endif
 #endif
   checkMsg("ComputeOrientations() execution failed\n");
   return 0.0;
@@ -365,12 +370,12 @@ double ComputeOrientations(cudaTextureObject_t texObj, SiftData &siftData, int o
 
 double ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftData &siftData, float subsampling, int octave)
 {
-  dim3 blocks(256); 
+  dim3 blocks(512); 
   dim3 threads(16, 8);
 #ifdef MANAGEDMEM
   ExtractSiftDescriptorsCONST<<<blocks, threads>>>(texObj, siftData.m_data, subsampling, octave);
 #else
-  ExtractSiftDescriptorsCONST<<<blocks, threads>>>(texObj, siftData.d_data, subsampling, octave);
+  ExtractSiftDescriptorsCONSTNew<<<blocks, threads>>>(texObj, siftData.d_data, subsampling, octave);
 #endif
   checkMsg("ExtractSiftDescriptors() execution failed\n");
   return 0.0; 
@@ -442,12 +447,12 @@ void PrepareLaplaceKernels(int numOctaves, float initBlur, float *kernel)
   for (int i=0;i<NUM_SCALES+3;i++) {
     float kernelSum = 0.0f;
     float var = scale*scale - initBlur*initBlur;
-    for (int j=-LAPLACE_R;j<=LAPLACE_R;j++) {
-      kernel[numOctaves*12*16 + 16*i+j+LAPLACE_R] = (float)expf(-(double)j*j/2.0/var);
-      kernelSum += kernel[numOctaves*12*16 + 16*i+j+LAPLACE_R]; 
+    for (int j=0;j<=LAPLACE_R;j++) {
+      kernel[numOctaves*12*16 + 16*i + j] = (float)expf(-(double)j*j/2.0/var);
+      kernelSum += (j==0 ? 1 : 2)*kernel[numOctaves*12*16 + 16*i + j]; 
     }
-    for (int j=-LAPLACE_R;j<=LAPLACE_R;j++) 
-      kernel[numOctaves*12*16 + 16*i+j+LAPLACE_R] /= kernelSum;  
+    for (int j=0;j<=LAPLACE_R;j++)
+      kernel[numOctaves*12*16 + 16*i + j] /= kernelSum;
     scale *= diffScale;
   }
 }
@@ -501,7 +506,7 @@ double FindPointsMulti(CudaImage *sources, SiftData &siftData, float thresh, flo
 #ifdef MANAGEDMEM
   FindPointsMulti<<<blocks, threads>>>(sources->d_data, siftData.m_data, w, p, h, subsampling, lowestScale, thresh, factor, edgeLimit, octave); 
 #else
-  FindPointsMulti<<<blocks, threads>>>(sources->d_data, siftData.d_data, w, p, h, subsampling, lowestScale, thresh, factor, edgeLimit, octave); 
+  FindPointsMultiNew<<<blocks, threads>>>(sources->d_data, siftData.d_data, w, p, h, subsampling, lowestScale, thresh, factor, edgeLimit, octave);
 #endif
 #endif
   checkMsg("FindPointsMulti() execution failed\n");

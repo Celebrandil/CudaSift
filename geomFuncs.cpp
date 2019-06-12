@@ -30,7 +30,7 @@ int ImproveHomography(SiftData &data, float *homography, int numLoops, float min
       float dx = (A.at<double>(0)*pt.xpos + A.at<double>(1)*pt.ypos + A.at<double>(2)) / den - pt.match_xpos;
       float dy = (A.at<double>(3)*pt.xpos + A.at<double>(4)*pt.ypos + A.at<double>(5)) / den - pt.match_ypos;
       float err = dx*dx + dy*dy;
-      float wei = limit / (err + limit);
+      float wei = (err<limit ? 1.0f : 0.0f); //limit / (err + limit);
       Y[0] = pt.xpos;
       Y[1] = pt.ypos;
       Y[2] = 1.0;

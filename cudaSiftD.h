@@ -8,10 +8,10 @@
 #define NUM_SCALES      5
 
 // Scale down thread block width
-#define SCALEDOWN_W    60 // 28 
+#define SCALEDOWN_W    64 // 60 
 
 // Scale down thread block height
-#define SCALEDOWN_H     8 // 24
+#define SCALEDOWN_H    16 // 8
 
 // Scale up thread block width
 #define SCALEUP_W      64
@@ -26,7 +26,7 @@
 #define MINMAX_H        8 //16 
  
 // Laplace thread block width
-#define LAPLACE_W     120 // 56
+#define LAPLACE_W     128 // 56
 
 // Laplace rows per thread
 #define LAPLACE_H       4

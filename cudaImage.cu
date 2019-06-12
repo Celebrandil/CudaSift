@@ -106,7 +106,7 @@ double CudaImage::CopyToTexture(CudaImage &dst, bool host)
     safeCall(cudaMemcpyToArray((cudaArray *)dst.t_data, 0, 0, h_data, sizeof(float)*pitch*dst.height, cudaMemcpyHostToDevice));
   else
     safeCall(cudaMemcpyToArray((cudaArray *)dst.t_data, 0, 0, d_data, sizeof(float)*pitch*dst.height, cudaMemcpyDeviceToDevice));
-  safeCall(cudaThreadSynchronize());
+  safeCall(cudaDeviceSynchronize());
   double gpuTime = timer.read();
 #ifdef VERBOSE
   printf("CopyToTexture time =          %.2f ms\n", gpuTime);

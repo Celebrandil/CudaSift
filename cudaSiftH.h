@@ -12,7 +12,7 @@ int ExtractSiftLoop(SiftData &siftData, CudaImage &img, int numOctaves, double i
 void ExtractSiftOctave(SiftData &siftData, CudaImage &img, int octave, float thresh, float lowestScale, float subsampling, float *memoryTmp);
 double ScaleDown(CudaImage &res, CudaImage &src, float variance);
 double ScaleUp(CudaImage &res, CudaImage &src);
-double ComputeOrientations(cudaTextureObject_t texObj, SiftData &siftData, int octave);
+double ComputeOrientations(cudaTextureObject_t texObj, CudaImage &src, SiftData &siftData, int octave);
 double ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftData &siftData, float subsampling, int octave);
 double OrientAndExtract(cudaTextureObject_t texObj, SiftData &siftData, float subsampling, int octave);
 double RescalePositions(SiftData &siftData, float scale);

@@ -21,8 +21,8 @@
 #include "cudautils.h"
 
 #define RUNCPU 1
-#define CHECK  0
-#define NPTS (2048*1)
+#define CHECK  1
+#define NPTS (2048*8)
 #define NDIM 128
 
 #define M1W  128
@@ -486,7 +486,7 @@ __global__ void Match8(float *d_pts1, float *d_pts2, float *d_score, int *d_inde
   int ty = threadIdx.y;
   int bp1 = M7W*blockIdx.x;
   for (int d=tx;d<NDIM/4;d+=M7W)
-    for (int j=ty;j<M7W;j+=M7H/4)     
+    for (int j=ty;j<M7W;j+=M7H/M7R)     
       buffer1[j*NDIM/4 + (d + j)%(NDIM/4)] = ((float4*)d_pts1)[(bp1 + j)*(NDIM/4) + d];
 
 #define NRX 2
@@ -501,7 +501,7 @@ __global__ void Match8(float *d_pts1, float *d_pts2, float *d_score, int *d_inde
   int iy = idx/(M7W/NRX);
   for (int bp2=0;bp2<NPTS;bp2+=M7H) {
     for (int d=tx;d<NDIM/4;d+=M7W)
-      for (int j=ty;j<M7H;j+=M7H/4)       
+      for (int j=ty;j<M7H;j+=M7H/M7R)       
 	buffer2[j*NDIM/4 + d] = ((float4*)d_pts2)[(bp2 + j)*(NDIM/4) + d];
     __syncthreads();
 
@@ -559,43 +559,57 @@ __global__ void Match8(float *d_pts1, float *d_pts2, float *d_score, int *d_inde
   }
 }
 
-__global__ void Match8shfl(float *d_pts1, float *d_pts2, float *d_score, int *d_index)
+__global__ void Match8small(float *d_pts1, float *d_pts2, float *d_score, int *d_index)
 {
+#define NRX 2
   __shared__ float4 buffer1[M7W*NDIM/4]; 
+  __shared__ float4 buffer2[M7H*NDIM/4];       
   int tx = threadIdx.x;
   int ty = threadIdx.y;
   int bp1 = M7W*blockIdx.x;
   for (int d=tx;d<NDIM/4;d+=M7W)
-    for (int j=ty;j<M7W;j+=M7H/M7R)     
+    for (int j=ty;j<M7W;j+=M7H/M7R/NRX)     
       buffer1[j*NDIM/4 + (d + j)%(NDIM/4)] = ((float4*)d_pts1)[(bp1 + j)*(NDIM/4) + d];
-  
-  float max_score = 0.0f;
-  int index = -1;    
-  float4 regbuf2[M7R];
+
+  float max_score[NRX];
+  int index[NRX];
+  for (int i=0;i<NRX;i++) {
+    max_score[i] = 0.0f;
+    index[i] = -1;
+  }
+  int idx = ty*M7W + tx;
+  int ix = idx%(M7W/NRX);
+  int iy = idx/(M7W/NRX);
   for (int bp2=0;bp2<NPTS;bp2+=M7H) {
     for (int d=tx;d<NDIM/4;d+=M7W)
-      for (int dy=0;dy<M7R;dy++)
-	regbuf2[dy] = ((float4*)d_pts2)[(bp2 + M7R*ty + dy)*(NDIM/4) + d];
+      for (int j=ty;j<M7H;j+=M7H/M7R/NRX)       
+	buffer2[j*NDIM/4 + d] = ((float4*)d_pts2)[(bp2 + j)*(NDIM/4) + d];
     __syncthreads();
-	
-    float score[M7R];                                    
+
+    float score[M7R][NRX];                                    
     for (int dy=0;dy<M7R;dy++)
-      score[dy] = 0.0f;
+      for (int i=0;i<NRX;i++)
+	score[dy][i] = 0.0f;
     for (int d=0;d<NDIM/4;d++) {
-      float4 v1 = buffer1[tx*NDIM/4 + (d + tx)%(NDIM/4)];
+      float4 v1[NRX];
+      for (int i=0;i<NRX;i++) 
+	v1[i] = buffer1[((M7W/NRX)*i + ix)*NDIM/4 + (d + (M7W/NRX)*i + ix)%(NDIM/4)];
       for (int dy=0;dy<M7R;dy++) {
-	float v2x = __shfl_sync(0xffffffff, regbuf2[dy].x, d);
-	float v2y = __shfl_sync(0xffffffff, regbuf2[dy].y, d);
-	float v2z = __shfl_sync(0xffffffff, regbuf2[dy].z, d);
-	float v2w = __shfl_sync(0xffffffff, regbuf2[dy].w, d);
-	score[dy] += v1.x*v2x; score[dy] += v1.y*v2y;
-	score[dy] += v1.z*v2z; score[dy] += v1.w*v2w;
+	float4 v2 = buffer2[(M7R*iy + dy)*(NDIM/4) + d];    
+	for (int i=0;i<NRX;i++) {
+	  score[dy][i] += v1[i].x*v2.x;
+	  score[dy][i] += v1[i].y*v2.y;
+	  score[dy][i] += v1[i].z*v2.z;
+	  score[dy][i] += v1[i].w*v2.w;
+	}
       }
     }
     for (int dy=0;dy<M7R;dy++) {
-      if (score[dy]>max_score) {   
-	max_score = score[dy];     
-	index = bp2 + M7R*ty + dy;               
+      for (int i=0;i<NRX;i++) {
+	if (score[dy][i]>max_score[i]) {
+	  max_score[i] = score[dy][i];     
+	  index[i] = bp2 + M7R*iy + dy;
+	}
       }
     }
     __syncthreads();
@@ -603,13 +617,17 @@ __global__ void Match8shfl(float *d_pts1, float *d_pts2, float *d_score, int *d_
 
   float *scores = (float*)buffer1;
   int *indices = (int*)&scores[M7W*M7H/M7R];
-  scores[ty*M7W + tx] = max_score;  
-  indices[ty*M7W + tx] = index;     
+  if (idx<M7W*M7H/M7R/NRX) {
+    for (int i=0;i<NRX;i++) {
+      scores[iy*M7W + (M7W/NRX)*i + ix] = max_score[i];  
+      indices[iy*M7W + (M7W/NRX)*i + ix] = index[i];
+    }
+  }
   __syncthreads();
   
   if (ty==0) {
-    max_score = scores[tx];
-    index = indices[tx];
+    float max_score = scores[tx];
+    int index = indices[tx];
     for (int y=0;y<M7H/M7R;y++)
       if (scores[y*M7W + tx]>max_score) {
 	max_score = scores[y*M7W + tx]; 
@@ -622,59 +640,177 @@ __global__ void Match8shfl(float *d_pts1, float *d_pts2, float *d_score, int *d_
 
 __global__ void Match8blocked(float *d_pts1, float *d_pts2, float *d_score, int *d_index)
 {
-#define NUM 8
-  __shared__ float4 buffer1[M7W*NDIM/4]; //%%%%
-  __shared__ float4 buffer2[M7H*NUM];
+#define NRX 2
+#define NUM (NRX*M7R)                       // 32*8 threads
+  __shared__ float4 buffer1[M7W*NDIM/4];    // 32*32
+  __shared__ float4 buffer2[M7H*NUM];       // 32*8
   int tx = threadIdx.x;
   int ty = threadIdx.y;
-  int idx = ty*M7W + tx;
   int bp1 = M7W*blockIdx.x;
   for (int d=tx;d<NDIM/4;d+=M7W)
-    for (int j=ty;j<M7W;j+=M7H/M7R)      //%%%%
+    for (int j=ty;j<M7W;j+=M7H/M7R)     
       buffer1[j*NDIM/4 + (d + j)%(NDIM/4)] = ((float4*)d_pts1)[(bp1 + j)*(NDIM/4) + d];
-    __syncthreads();
-  
-  float max_score = 0.0f;
-  int index = -1;    
-  for (int bp2=0;bp2<NPTS;bp2+=M7H) {
 
-    float score[M7R];                                    
+  float max_score[NRX];
+  int index[NRX];
+  for (int i=0;i<NRX;i++) {
+    max_score[i] = 0.0f;
+    index[i] = -1;
+  }
+  int idx = ty*M7W + tx;
+  int ix = idx%(M7W/NRX);
+  int iy = idx/(M7W/NRX);
+  for (int bp2=0;bp2<NPTS;bp2+=M7H) {
+    float score[M7R][NRX];                                    
     for (int dy=0;dy<M7R;dy++)
-      score[dy] = 0.0f;
-    for (int d=0;d<NDIM/4;d+=NUM) {
-      if (idx<M7H*NUM) 
-	buffer2[idx] = ((float4*)d_pts2)[(bp2 + (idx/NUM))*(NDIM/4) + d + (idx%NUM)];
+      for (int i=0;i<NRX;i++)
+	score[dy][i] = 0.0f;
+
+    int d = (idx%NUM);
+    int j = (idx/NUM);
+    buffer2[j*NUM + d] = ((float4*)d_pts2)[(bp2 + j)*(NDIM/4) + d];
+    __syncthreads();
+    for (int dp=0;dp<NDIM/4;dp+=NUM) {
+      float4 temp;
+      if (dp<(NDIM/4-NUM))
+	temp = ((float4*)d_pts2)[(bp2 + j)*(NDIM/4) + dp + d + NUM];
+
+      if (idx<M7W*M7H/M7R/NRX) {
+	for (int d=0;d<NUM;d++) {
+	  float4 v1[NRX];
+#pragma unroll
+	  for (int i=0;i<NRX;i++) 
+	    v1[i] = buffer1[(((M7W/NRX)*i + ix)<<5) + ((dp + d + (M7W/NRX)*i + ix)&31)];
+	  //v1[i] = buffer1[((M7W/NRX)*i + ix)*NDIM/4 + (dp + d + (M7W/NRX)*i + ix)%(NDIM/4)];
+#pragma unroll
+	  for (int dy=0;dy<M7R;dy++) {
+	    float4 v2 = buffer2[(M7R*iy + dy)*NUM + d];    
+#pragma unroll
+	    for (int i=0;i<NRX;i++) {
+	      score[dy][i] += v1[i].x*v2.x;
+	      score[dy][i] += v1[i].y*v2.y;
+	      score[dy][i] += v1[i].z*v2.z;
+	      score[dy][i] += v1[i].w*v2.w;
+	    }
+	  }
+	}
+      }
       __syncthreads();
-      for (int i=0;i<NUM;i++) {
-	float4 v1 = buffer1[tx*NDIM/4 + (d + i + tx)%(NDIM/4)];
-	for (int dy=0;dy<M7R;dy++) {
-	  float4 v2 = buffer2[(M7R*ty + dy)*NUM + i];
-	  score[dy] += v1.x*v2.x;
-	  score[dy] += v1.y*v2.y;
-	  score[dy] += v1.z*v2.z;
-	  score[dy] += v1.w*v2.w;
+
+      if (dp<(NDIM/4-NUM)) {
+	buffer2[j*NUM + d] = temp;
+	__syncthreads();
+      }
+    }
+    for (int dy=0;dy<M7R;dy++) {
+      for (int i=0;i<NRX;i++) {
+	if (score[dy][i]>max_score[i]) {
+	  max_score[i] = score[dy][i];     
+	  index[i] = bp2 + M7R*iy + dy;
+	}
+      }
+    }
+    __syncthreads();
+  }
+
+  float *scores = (float*)buffer1;
+  int *indices = (int*)&scores[M7W*M7H/M7R];
+  if (idx<M7W*M7H/M7R/NRX) {
+    for (int i=0;i<NRX;i++) {
+      scores[iy*M7W + (M7W/NRX)*i + ix] = max_score[i];  
+      indices[iy*M7W + (M7W/NRX)*i + ix] = index[i];
+    }
+  }
+  __syncthreads();
+  
+  if (ty==0) {
+    float max_score = scores[tx];
+    int index = indices[tx];
+    for (int y=0;y<M7H/M7R;y++)
+      if (scores[y*M7W + tx]>max_score) {
+	max_score = scores[y*M7W + tx]; 
+	index = indices[y*M7W + tx];    
+      }
+    d_score[bp1 + tx] = max_score;
+    d_index[bp1 + tx] = index;
+  }
+}
+
+__global__ void Match8blocked2(float *d_pts1, float *d_pts2, float *d_score, int *d_index)
+{
+#define NRX 2
+#define NUM (NRX*M7R)                       // 32*8 threads
+  __shared__ float4 buffer1[M7W*NDIM/4];    // 32*32
+  __shared__ float4 buffer2[M7H*NUM];       // 32*8
+  int tx = threadIdx.x;
+  int ty = threadIdx.y;
+  int bp1 = M7W*blockIdx.x;
+  for (int d=tx;d<NDIM/4;d+=M7W)
+    for (int j=ty;j<M7W;j+=M7H/M7R)     
+      buffer1[j*NDIM/4 + (d + j)%(NDIM/4)] = ((float4*)d_pts1)[(bp1 + j)*(NDIM/4) + d];
+
+  float max_score[NRX];
+  int index[NRX];
+  for (int i=0;i<NRX;i++) {
+    max_score[i] = 0.0f;
+    index[i] = -1;
+  }
+  int idx = ty*M7W + tx;
+  int ix = idx%(M7W/NRX);
+  int iy = idx/(M7W/NRX);
+  for (int bp2=0;bp2<NPTS;bp2+=M7H) {
+    float score[M7R][NRX];                                    
+    for (int dy=0;dy<M7R;dy++)
+      for (int i=0;i<NRX;i++)
+	score[dy][i] = 0.0f;
+    for (int dp=0;dp<NDIM/4;dp+=NUM) {
+      int d = (idx%NUM);
+      int j = (idx/NUM);
+      buffer2[j*NUM + d] = ((float4*)d_pts2)[(bp2 + j)*(NDIM/4) + dp + d];
+      __syncthreads();
+
+      if (idx<M7W*M7H/M7R/NRX) {
+	for (int d=0;d<NUM;d++) {
+	  float4 v1[NRX];
+	  for (int i=0;i<NRX;i++) 
+	    v1[i] = buffer1[((M7W/NRX)*i + ix)*NDIM/4 + (dp + d + (M7W/NRX)*i + ix)%(NDIM/4)];
+	  for (int dy=0;dy<M7R;dy++) {
+	    float4 v2 = buffer2[(M7R*iy + dy)*NUM + d];    
+	    for (int i=0;i<NRX;i++) {
+	      score[dy][i] += v1[i].x*v2.x;
+	      score[dy][i] += v1[i].y*v2.y;
+	      score[dy][i] += v1[i].z*v2.z;
+	      score[dy][i] += v1[i].w*v2.w;
+	    }
+	  }
 	}
       }
       __syncthreads();
     }
     for (int dy=0;dy<M7R;dy++) {
-      if (score[dy]>max_score) {   
-	max_score = score[dy];     
-	index = bp2 + M7R*ty + dy;               
+      for (int i=0;i<NRX;i++) {
+	if (score[dy][i]>max_score[i]) {
+	  max_score[i] = score[dy][i];     
+	  index[i] = bp2 + M7R*iy + dy;
+	}
       }
     }
+    __syncthreads();
   }
 
-    __syncthreads();
   float *scores = (float*)buffer1;
   int *indices = (int*)&scores[M7W*M7H/M7R];
-  scores[ty*M7W + tx] = max_score;  
-  indices[ty*M7W + tx] = index;     
+  if (idx<M7W*M7H/M7R/NRX) {
+    for (int i=0;i<NRX;i++) {
+      scores[iy*M7W + (M7W/NRX)*i + ix] = max_score[i];  
+      indices[iy*M7W + (M7W/NRX)*i + ix] = index[i];
+    }
+  }
   __syncthreads();
   
   if (ty==0) {
-    max_score = scores[tx];
-    index = indices[tx];
+    float max_score = scores[tx];
+    int index = indices[tx];
     for (int y=0;y<M7H/M7R;y++)
       if (scores[y*M7W + tx]>max_score) {
 	max_score = scores[y*M7W + tx]; 
@@ -695,7 +831,7 @@ __global__ void Match9(float *d_pts1, float *d_pts2, float *d_score, int *d_inde
   int ty = threadIdx.y;
   int bp1 = M7W*blockIdx.x;
   for (int d=tx;d<NDIM/4;d+=M7W)
-    for (int j=ty;j<M7W;j+=M7H/4)     
+    for (int j=ty;j<M7W;j+=M7H/M7R)     
       buffer1[j*NDIM/4 + (d + j)%(NDIM/4)] = ((float4*)d_pts1)[(bp1 + j)*(NDIM/4) + d];
 
   float max_score[NRX];
@@ -909,15 +1045,24 @@ int main(int argc, char *argv[])
   delay = time.read() - ltime;
   checkMsg("Match8 error");
   std::cout << "MatchGPU8:   " << delay << " ms  " << 2.0*NPTS*NPTS*NDIM/delay/1024/1024 << " Gflops" << std::endl;
-  
+  #if 1
+  blocks = dim3(NPTS/M7W);
+  threads = dim3(M7W, M7H/M7R/2);
+  ltime = time.read();
+  Match8small<<<blocks,threads>>>(d_pts1, d_pts2, d_score, d_index);
+  delay = time.read() - ltime;
+  checkMsg("Match8small error");
+  std::cout << "Match8small:   " << delay << " ms  " << 2.0*NPTS*NPTS*NDIM/delay/1024/1024 << " Gflops" << std::endl;
+  #endif
+  #if 1
   blocks = dim3(NPTS/M7W);
   threads = dim3(M7W, M7H/M7R);
   ltime = time.read();
-  Match9<<<blocks,threads>>>(d_pts1, d_pts2, d_score, d_index);
+  Match8blocked<<<blocks,threads>>>(d_pts1, d_pts2, d_score, d_index);
   delay = time.read() - ltime;
-  checkMsg("Match9 error");
-  std::cout << "MatchGPU9:   " << delay << " ms  " << 2.0*NPTS*NPTS*NDIM/delay/1024/1024 << " Gflops" << std::endl;
-  
+  checkMsg("Match8blocked error");
+  std::cout << "MatchGPU8blocked:   " << delay << " ms  " << 2.0*NPTS*NPTS*NDIM/delay/1024/1024 << " Gflops" << std::endl;
+  #endif
   ltime = time.read();
   safeCall(cudaMemcpy(h_index2.data(), d_index, psize, cudaMemcpyDeviceToHost));
   safeCall(cudaMemcpy(h_score2.data(), d_score, psize, cudaMemcpyDeviceToHost));

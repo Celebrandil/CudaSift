@@ -22,7 +22,7 @@ inline void __safeCall(cudaError err, const char *file, const int line)
 
 inline void __safeThreadSync(const char *file, const int line)
 {
-  cudaError err = cudaThreadSynchronize();
+  cudaError err = cudaDeviceSynchronize();
   if (cudaSuccess != err) {
     fprintf(stderr, "threadSynchronize() Driver API error in file '%s' in line %i : %s.\n", file, line, cudaGetErrorString(err));
     exit(-1);
