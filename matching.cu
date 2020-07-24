@@ -387,6 +387,9 @@ __global__ void FindMaxCorr10(SiftPoint *sift1, SiftPoint *sift2, int numPts1, i
 	  index = indices[y*M7W + tx];
 	} else if (scores1[y*M7W + tx]>sec_score)
 	  sec_score = scores1[y*M7W + tx];
+
+        if (scores2[y*M7W + tx]>sec_score)
+          sec_score = scores2[y*M7W + tx];
       }
     sift1[bp1 + tx].score = max_score;
     sift1[bp1 + tx].match = index;
