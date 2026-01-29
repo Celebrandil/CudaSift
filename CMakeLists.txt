@@ -11,6 +11,53 @@ set(CPACK_PACKAGE_VERSION_PATCH "${cudaSift_VERSION_PATCH}")
 set(CPACK_GENERATOR "ZIP")
 include(CPack)
 
+# =============================================================================
+# GCC VERSION CONFIGURATION
+# =============================================================================
+# You must specify the GCC version to use for CUDA compilation.
+# This is required because CUDA has specific GCC version compatibility requirements.
+#
+# Option 1: Set it here directly (uncomment and modify the line below)
+# set(GCC_VERSION "10")
+#
+# Option 2: Pass it as a CMake parameter
+# cmake .. -DGCC_VERSION=10
+#
+# Common compatible versions:
+#   - CUDA 11.x: GCC 7, 8, 9, 10
+#   - CUDA 12.x: GCC 9, 10, 11, 12
+# =============================================================================
+
+if(NOT DEFINED GCC_VERSION)
+  message(FATAL_ERROR 
+    "\n"
+    "=======================================================================\n"
+    "GCC_VERSION is not specified!\n"
+    "=======================================================================\n"
+    "Please specify the GCC version using one of the following methods:\n"
+    "\n"
+    "  1. Edit CMakeLists.txt and uncomment: set(GCC_VERSION \"10\")\n"
+    "  2. Pass as parameter: cmake .. -DGCC_VERSION=10\n"
+    "\n"
+    "Example: cmake .. -DGCC_VERSION=10\n"
+    "=======================================================================\n"
+  )
+endif()
+
+find_program(GCC_COMPILER gcc-${GCC_VERSION})
+find_program(GXX_COMPILER g++-${GCC_VERSION})
+
+if(NOT GCC_COMPILER)
+  message(FATAL_ERROR "gcc-${GCC_VERSION} not found! Please specify a valid GCC version.")
+endif()
+
+if(NOT GXX_COMPILER)
+  message(FATAL_ERROR "g++-${GCC_VERSION} not found! Please specify a valid GCC version.")
+endif()
+
+message(STATUS "Using GCC: ${GCC_COMPILER}")
+message(STATUS "Using G++: ${GXX_COMPILER}")
+
 find_package(OpenCV REQUIRED)
 find_package(CUDA)
 if (NOT CUDA_FOUND)
@@ -27,7 +74,7 @@ if (UNIX)
     list(APPEND CUDA_NVCC_FLAGS "-arch=sm_35;--compiler-options;-O2;-DVERBOSE") 
   else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -msse2 ")
-    list(APPEND CUDA_NVCC_FLAGS "-lineinfo;-ccbin;/usr/bin/gcc-6;--compiler-options;-O2;-D_FORCE_INLINES;-DVERBOSE_NOT") 
+    list(APPEND CUDA_NVCC_FLAGS "-lineinfo;-ccbin;${GXX_COMPILER};--compiler-options;-O2;-D_FORCE_INLINES;-DVERBOSE_NOT")
   endif()
 endif()
 
@@ -51,20 +98,14 @@ include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR} 
 )
 
-#SET(CUDA_SEPARABLE_COMPILATION ON)
-
 cuda_add_executable(cudasift ${cuda_sources} ${sources} OPTIONS -arch=sm_35)
-
-#cuda_add_executable(l2net l2netD.cu OPTIONS -arch=sm_35)
 
 set_target_properties(cudasift PROPERTIES
   COMPILE_FLAGS "${EXTRA_CXX_FLAGS}"			   
 )
 
 target_link_libraries(cudasift ${CUDA_cudadevrt_LIBRARY} ${OpenCV_LIBS})
-#  /usr/local/cuda/lib64/libcudadevrt.a ${OpenCV_LIBS} 
-#)
- 
+
 install(FILES 
   ${cuda_sources} 
   ${sources}
