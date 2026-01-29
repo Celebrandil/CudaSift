@@ -132,3 +132,47 @@ Results with upscaling (upScale=True) of 1280x960 pixel input image.
 |    4.0    |   1331   |   39.8%  |    9.5    |
 |    4.5    |    954   |   42.2%  |    9.3    |
 |    5.0    |    611   |   39.3%  |    9.1    |
+
+## How to build
+
+### Prerequisites
+
+- NVIDIA GPU (Kepler or newer)
+- CUDA Toolkit
+- CMake (version 2.6 or higher)
+- OpenCV
+- GCC (version compatible with your CUDA installation)
+
+### GCC version compatibility
+
+CUDA has specific GCC version requirements. Common compatible versions are:
+- CUDA 11.x: GCC 7, 8, 9, 10
+- CUDA 12.x: GCC 9, 10, 11, 12
+
+### Building
+
+First, create a build directory and navigate to it:
+
+```bash
+mkdir build
+cd build
+```
+Then run CMake with your GCC version specified. You can do this in two ways:
+
+### Option 1: Pass GCC version as a CMake parameter:
+
+```bash
+cmake .. -DGCC_VERSION=10
+make -j$(nproc)
+```
+
+### Option 2: Edit CMakeLists.txt directly and uncomment the following line with your desired version:
+```bash
+set(GCC_VERSION "10")
+```
+
+then build normally:
+```bash
+cmake ..
+make -j$(nproc)
+```
