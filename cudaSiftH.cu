@@ -30,10 +30,12 @@ void InitCuda(int devNum)
   cudaGetDeviceProperties(&prop, devNum);
   printf("Device Number: %d\n", devNum);
   printf("  Device name: %s\n", prop.name);
-  printf("  Memory Clock Rate (MHz): %d\n", prop.memoryClockRate/1000);
+  printf("  Compute Capability: %d.%d\n", prop.major, prop.minor);
+  printf("  Total Global Memory: %zu MB\n", prop.totalGlobalMem / (1024 * 1024));
   printf("  Memory Bus Width (bits): %d\n", prop.memoryBusWidth);
-  printf("  Peak Memory Bandwidth (GB/s): %.1f\n\n",
-	 2.0*prop.memoryClockRate*(prop.memoryBusWidth/8)/1.0e6);
+  printf("  L2 Cache Size: %d KB\n", prop.l2CacheSize / 1024);
+  printf("  Max Threads per Block: %d\n", prop.maxThreadsPerBlock);
+  printf("  Multiprocessor Count: %d\n\n", prop.multiProcessorCount);
 }
 
 float *AllocSiftTempMemory(int width, int height, int numOctaves, bool scaleUp)
