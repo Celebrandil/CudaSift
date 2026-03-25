@@ -1,402 +1,178 @@
-# CudaSift — GPU-Accelerated SIFT Feature Detection & Matching
+# CudaSift - SIFT features with CUDA
 
-**Branch: AdaLovelace** — Optimized for NVIDIA Ada Lovelace architecture (RTX 4060 Ti, sm_89)
+This is the fourth version of a SIFT (Scale Invariant Feature Transform) implementation using CUDA for GPUs from NVidia. The first version is from 2007 and GPUs have evolved since then. This version is slightly more precise and considerably faster than the previous versions and has been optimized for Kepler and later generations of GPUs.
 
-A high-performance CUDA implementation of the Scale Invariant Feature Transform (SIFT) algorithm. This implementation runs the complete SIFT pipeline on the GPU, achieving sub-millisecond feature extraction on modern NVIDIA hardware.
+On a GTX 1060 GPU the code takes about 1.2 ms on a 1280x960 pixel image and 1.7 ms on a 1920x1080 pixel image. There is also code for brute-force matching of features that takes about 2.2 ms for two sets of around 1900 SIFT features each.
 
-Based on the original work by Mårten Björkman (Celebrandil), with Ada Lovelace architecture optimizations.
+The code relies on CMake for compilation and OpenCV for image containers. OpenCV can however be quite easily changed to something else. The code can be relatively hard to read, given the way things have been parallelized for maximum speed.
 
----
+The code is free to use for non-commercial applications. If you use the code for research, please cite to the following paper.
 
-## Hardware Target
+M. Bj&ouml;rkman, N. Bergstr&ouml;m and D. Kragic, "Detecting, segmenting and tracking unknown objects using multi-label MRF inference", CVIU, 118, pp. 111-127, January 2014. [ScienceDirect](http://www.sciencedirect.com/science/article/pii/S107731421300194X)
 
-| Spec | Value |
-|------|-------|
-| GPU | NVIDIA GeForce RTX 4060 Ti |
-| Architecture | Ada Lovelace (sm_89) |
-| CUDA Cores | 4352 |
-| VRAM | 8 GB GDDR6 |
-| Memory Bandwidth | 288 GB/s |
-| FP32 Performance | ~22.1 TFLOPS |
-| L2 Cache | 32 MB |
-| Driver | 595.71 |
+## Update in feature matching (2019-05-17)
 
-## Performance Benchmarks
+The brute force feature matcher has been significantly improved in speed. The largest improvements can be seen for large feature sets with 10000 features or more, but as can be seen below, it performs rather well even with just 2000 features. The file [match.pdf](https://github.com/Celebrandil/CudaSift/blob/Pascal/match.pdf) includes a description of the optimizations done in this version.
 
-### SIFT Extraction (5 octaves, threshold=3.0)
+## New version for Pascal (2018-10-26)
 
-| Resolution | Size | Features | Extract (ms) | Match (ms) | Total (ms) | FPS |
-|-----------|------|----------|-------------|------------|------------|-----|
-| VGA | 640x480 | 653 | 0.77 | 0.12 | 1.04 | 965 |
-| 720p | 1280x720 | 1155 | 0.91 | 0.20 | 1.47 | 681 |
-| SXGA | 1280x960 | 1326 | 0.99 | 0.21 | 1.66 | 601 |
-| 1080p | 1920x1080 | 1911 | 1.38 | 0.34 | 2.49 | 402 |
-| 1440p | 2560x1440 | 2244 | 1.85 | 0.38 | 3.56 | 281 |
-| 4K UHD | 3840x2160 | 2829 | 3.53 | 0.51 | 6.95 | 144 |
+There is a new version optimized for Pascal cards, but it should work also on many older cards. Since it includes some bug fixes that changes slightly how features are extracted, which might affect matching to features extracted using an older version, the changes are kept in a new branch (Pascal). The fixes include a small change in ScaleDown that corrects an odd behaviour for images with heights not divisible by 2^(#octaves). The second change is a correction of an improper shift of (0.5,0.5) pixels, when pixel values were read from the image to create a descriptor. 
 
-> Benchmarked on RTX 4060 Ti (Driver 595.71, CUDA 13.1). Compute Capability 8.9, 34 SMs, 8187 MB VRAM, 128-bit bus, 32768 KB L2 cache.
+Then there are some improvements in terms of speed, especially in the Laplace function, that detects DoG features, and the LowPass function, that is seen as preprocessing and is not included in the benchmarking below. Maybe surprisingly, even if optimizations were done with respect to Pascal cards, these improvements were even better for older cards. The changes involve trying to make each CUDA thread have more work to do, using fewer thread blocks. For typical images of today, there will be enough blocks to feed the streaming multiprocessors anyway.
 
-### Feature Matching (FindMaxCorr10 kernel)
+Latest result of version under test:
 
-| Features | Match Time (ms) |
-|----------|----------------|
-| 1911 (self-match) | 0.33 |
+|         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
+| ------- | ------------------- | -------| ---------| ---------- | --------|--------|
+| Turing  | GeForce RTX 2080 Ti |   0.42* |     0.56* |	11750    |  616    |   0.30* |
+| Pascal  | GeForce GTX 1080 Ti |   0.58* |     0.80* |	10609    |  484    |   0.42* |
+| Pascal  | GeForce GTX 1060    |   1.2 |     1.7 |	3855    |  192    |   2.2 |
+| Maxwell | GeForce GTX 970     |   1.3 |     1.8 |    3494    |  224    |   2.5 |
+| Kepler  | Tesla K40c          |   2.4 |     3.4 |    4291    |  288    |   4.7 |
 
-### Octave Comparison (1080p, threshold=3.0)
+Matching is done between two sets of 1911 and 2086 features respectively. A star indicates results from the last checked in version.
 
-| Octaves | Features | Extract (ms) |
-|---------|----------|-------------|
-| 3 | 1741 | 1.24 |
-| 4 | 1877 | 1.35 |
-| 5 | 1911 | 1.60 |
-| 6 | 1920 | 1.80 |
+## Benchmarking of new version (2018-08-22)
 
-### Threshold Comparison (1080p, 5 octaves)
+About every 2nd year, I try to update the code to gain even more speed through further optimization. Here are some results for a new version of the code. Improvements in speed have primarilly been gained by reducing communication between host and device, better balancing the load on caches, shared and global memory, and increasing the workload of each thread block.
 
-| Threshold | Features | Extract (ms) |
-|-----------|----------|-------------|
-| 1.0 | 7081 | 2.07 |
-| 2.0 | 3700 | 1.79 |
-| 3.0 | 1911 | 1.59 |
-| 5.0 | 542 | 1.32 |
-| 10.0 | 6 | 1.35 |
+|         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
+| ------- | ------------------- | -------| ---------| ---------- | --------|--------|
+| Pascal  | GeForce GTX 1080 Ti |   0.7  |     1.0  |	10609    |  484    |   1.0 |
+| Pascal  | GeForce GTX 1060    |   1.6  |     2.4  |	3855    |  192    |   2.2 |
+| Maxwell | GeForce GTX 970     |   1.9  |     2.8  |    3494    |  224    |   2.5 |
+| Kepler  | Tesla K40c          |   3.1  |     4.7  |    4291    |  288    |   4.7 |
+| Kepler  | GeForce GTX TITAN   |   2.9  |     4.3  |    4500    |  288    |   4.5 |
 
-### Cross-Architecture Comparison
+Matching is done between two sets of 1818 and 1978 features respectively. 
 
-| Arch | GPU | Extract 1280x960 | Extract 1920x1080 | Match (ms) | GFLOPS | BW (GB/s) |
-|------|-----|------------------|--------------------|------------|--------|-----------|
-| Pascal | GTX 1080 Ti | 1.20* | 1.70* | 2.20* | 11340 | 484 |
-| Turing | RTX 2080 Ti | 0.42* | 0.56* | 0.30* | 11750 | 616 |
-| **Ada** | **RTX 4060 Ti** | **0.99** | **1.38** | **0.33** | **22060** | **288** |
+It's questionable whether further optimization really makes sense, given that the cost of just transfering an 1920x1080 pixel image to the device takes about 1.4 ms on a GTX 1080 Ti. Even if the brute force feature matcher is not much faster than earlier versions, it does not have the same O(N^2) temporary memory overhead, which is preferable if there are many features.
 
-> \* Values from original CudaSift benchmarks. Ada values measured with Driver 595.71, CUDA 13.1.
+## Benchmarking of previous version (2017-05-24)
 
-## Architecture Overview
+Computational cost (in milliseconds) on different GPUs:
 
-```
-Input Image (Host -> Device)
-         |
-         v
-+--------------------------------------------------+
-|          Gaussian Scale Space                     |
-|  Octave 0 (full) -> Octave 1 (1/2) -> ... -> N   |
-|         |                                         |
-|         v                                         |
-|  LaplaceMulti: DoG computation                    |
-|  (5 scales + 3 border per octave)                 |
-+--------------------------------------------------+
-         |
-         v
-+--------------------------------------------------+
-|          Keypoint Detection                       |
-|  FindPointsMulti:                                 |
-|    - 3D extrema detection (26 neighbors)          |
-|    - Edge response rejection                      |
-|    - Sub-pixel localization (Taylor expansion)    |
-+--------------------------------------------------+
-         |
-         v
-+--------------------------------------------------+
-|        Orientation Assignment                     |
-|  ComputeOrientations:                             |
-|    - 32-bin gradient histogram                    |
-|    - Gaussian-weighted 11x11 window               |
-|    - Secondary peak -> duplicate feature          |
-+--------------------------------------------------+
-         |
-         v
-+--------------------------------------------------+
-|       Descriptor Computation                      |
-|  ExtractSiftDescriptors:                          |
-|    - 4x4 spatial bins x 8 orientations            |
-|    - 128-D vector per feature                     |
-|    - Two-pass normalization (clip + renorm)       |
-+--------------------------------------------------+
-         |
-         v
-+--------------------------------------------------+
-|          Feature Matching                         |
-|  FindMaxCorr10 (brute-force):                     |
-|    - 32x32 feature block tiling                   |
-|    - float4 vectorized loads                      |
-|    - Warp shuffle reductions                      |
-|    - Best + second-best tracking (ambiguity)      |
-|                                                   |
-|  FindHomography (RANSAC):                         |
-|    - 4-point DLT on GPU                           |
-|    - Parallel hypothesis testing                  |
-|    - Iterative refinement (CPU, Cholesky)         |
-+--------------------------------------------------+
-```
+|         |                     | 1280x960 | 1920x1080 |  GFLOPS  | Bandwidth | Matching |
+| ------- | ------------------- | -------| ---------| ---------- | --------|--------|
+| Pascal  | GeForce GTX 1080 Ti |   1.7  |     2.3  |	10609    |  484    |   1.4 |
+| Pascal  | GeForce GTX 1060    |   2.7  |     4.0  |	 3855    |  192    |   2.6 |
+| Maxwell | GeForce GTX 970     |   3.8  |     5.6  |    3494    |  224    |   2.8 |
+| Kepler  | Tesla K40c          |   5.4  |     8.0  |    4291    |  288    |   5.5 |
+| Kepler  | GeForce GTX TITAN   |   4.4  |     6.6  |    4500    |  288    |   4.6 |
 
-## CUDA Kernel Configuration
-
-| Kernel | Block Size | Shared Mem | Description |
-|--------|-----------|------------|-------------|
-| ScaleDown | 68x1 | 2 KB | 2x downsampling with 5-tap Gaussian |
-| LaplaceMulti | 136x1 | 4 KB | Multi-scale DoG computation |
-| FindPointsMulti | 32x1 | 1 KB | 3D extrema detection + sub-pixel |
-| ComputeOrientations | 121x1 | 0.5 KB | Gradient histogram, peak detection |
-| ExtractSiftDescriptors | 16x8 | 0.7 KB | 128-D descriptor with trilinear interp |
-| FindMaxCorr10 | 32x8 | 32 KB | Tiled brute-force matching |
-
-## Building
-
-### Prerequisites
-
-- **CUDA Toolkit** 11.0+ (recommended 12.x for Ada Lovelace)
-- **OpenCV** 4.x
-- **CMake** 3.18+
-- **C++17** compatible compiler
-
-### Quick Build (Windows)
-
-```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release
-```
-
-### Quick Build (Linux)
-
-```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-```
-
-### Using the Build Script
-
-```bash
-bash scripts/build.sh Release
-```
-
-### CMake Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `BUILD_TESTS` | ON | Build test and benchmark programs |
-| `BUILD_EXAMPLES` | ON | Build example programs |
-| `USE_MANAGED_MEM` | OFF | Use CUDA managed memory |
-| `VERBOSE_OUTPUT` | ON | Enable verbose timing output |
+Matching is done between two sets of 1616 and 1769 features respectively. 
+ 
+The improvements in this version involved a slight adaptation for Pascal, changing from textures to global memory (mostly through L2) in the most costly function LaplaceMulti. The medium-end card GTX 1060 is impressive indeed. 
 
 ## Usage
 
-### Main Demo
+There are two different containers for storing data on the host and on the device; *SiftData* for SIFT features and *CudaImage* for images. Since memory allocation on GPUs is slow, it's usually preferable to preallocate a sufficient amount of memory using *InitSiftData()*, in particular if SIFT features are extracted from a continuous stream of video camera images. On repeated calls *ExtractSift()* will reuse memory previously allocated.
+~~~c
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <cudaImage.h>
+#include <cudaSift.h>
+
+/* Reserve memory space for a whole bunch of SIFT features. */
+SiftData siftData;
+InitSiftData(siftData, 25000, true, true);
+
+/* Read image using OpenCV and convert to floating point. */
+cv::Mat limg;
+cv::imread("image.png", 0).convertTo(limg, CV32FC1);
+/* Allocate 1280x960 pixel image with device side pitch of 1280 floats. */ 
+/* Memory on host side already allocated by OpenCV is reused.           */
+CudaImage img;
+img.Allocate(1280, 960, 1280, false, NULL, (float*) limg.data);
+/* Download image from host to device */
+img.Download();
+
+int numOctaves = 5;    /* Number of octaves in Gaussian pyramid */
+float initBlur = 1.0f; /* Amount of initial Gaussian blurring in standard deviations */
+float thresh = 3.5f;   /* Threshold on difference of Gaussians for feature pruning */
+float minScale = 0.0f; /* Minimum acceptable scale to remove fine-scale features */
+bool upScale = false;  /* Whether to upscale image before extraction */
+/* Extract SIFT features */
+ExtractSift(siftData, img, numOctaves, initBlur, thresh, minScale, upScale);
+...
+/* Free space allocated from SIFT features */
+FreeSiftData(siftData);
+
+~~~
+
+## Parameter setting
+
+The requirements on number and quality of features vary from application to application. Some applications benefit from a smaller number of high quality features, while others require as many features as possible. More distinct features with higher DoG (difference of Gaussians) responses tend to be of higher quality and are easier to match between multiple views. With the parameter *thresh* a threshold can be set on the minimum DoG to prune features of less quality. 
+
+In many cases the most fine-scale features are of little use, especially when noise conditions are severe or when features are matched between very different views. In such cases the most fine-scale features can be pruned by setting *minScale* to the minimum acceptable feature scale, where 1.0 corresponds to the original image scale without upscaling. As a consequence of pruning the computational cost can also be reduced.
+
+To increase the number of SIFT features, but also increase the computational cost, the original image can be automatically upscaled to double the size using the *upScale* parameter, in accordance to Lowe's recommendations. One should keep in mind though that by doing so the fraction of features that can be matched tend to go down, even if the total number of extracted features increases significantly. If it's enough to instead reduce the *thresh* parameter to get more features, that is often a better alternative.
+
+Results without upscaling (upScale=False) of 1280x960 pixel input image. 
+
+| *thresh* | #Matches | %Matches | Cost (ms) |
+|-----------|----------|----------|-----------|
+|    1.0    |   4236   |   40.4%  |    5.8    |
+|    1.5    |   3491   |   42.5%  |    5.2    |
+|    2.0    |   2720   |   43.2%  |    4.7    |
+|    2.5    |   2121   |   44.4%  |    4.2    |
+|    3.0    |   1627   |   45.8%  |    3.9    |
+|    3.5    |   1189   |   46.2%  |    3.6    |
+|    4.0    |    881   |   48.5%  |    3.3    |
+
+
+Results with upscaling (upScale=True) of 1280x960 pixel input image.
+
+| *thresh* | #Matches | %Matches | Cost (ms) |
+|-----------|----------|----------|-----------|
+|    2.0    |   4502   |   34.9%  |   13.2    |
+|    2.5    |   3389   |   35.9%  |   11.2    |
+|    3.0    |   2529   |   37.1%  |   10.6    |
+|    3.5    |   1841   |   38.3%  |    9.9    |
+|    4.0    |   1331   |   39.8%  |    9.5    |
+|    4.5    |    954   |   42.2%  |    9.3    |
+|    5.0    |    611   |   39.3%  |    9.1    |
+
+## How to build
+
+### Prerequisites
+
+- NVIDIA GPU (Kepler or newer)
+- CUDA Toolkit
+- CMake (version 2.6 or higher)
+- OpenCV
+- GCC (version compatible with your CUDA installation)
+
+### GCC version compatibility
+
+CUDA has specific GCC version requirements. Common compatible versions are:
+- CUDA 11.x: GCC 7, 8, 9, 10
+- CUDA 12.x: GCC 9, 10, 11, 12
+
+### Building
+
+First, create a build directory and navigate to it:
 
 ```bash
-# Default (img1.png & img2.png)
-./cudasift
-
-# Specify GPU device and image set
-./cudasift 0 1   # device 0, PGM image set
+mkdir build
+cd build
 ```
+Then run CMake with your GCC version specified. You can do this in two ways:
 
-### Feature Extraction Demo
+### Option 1: Pass GCC version as a CMake parameter:
 
 ```bash
-./demo_extract [image_path] [gpu_id] [threshold] [num_octaves]
-./demo_extract data/img1.png 0 3.0 5
+cmake .. -DGCC_VERSION=10
+make -j$(nproc)
 ```
 
-Output: `data/keypoints.png` with detected keypoints drawn.
-
-### Feature Matching Demo
-
+### Option 2: Edit CMakeLists.txt directly and uncomment the following line with your desired version:
 ```bash
-./demo_match [img1] [img2] [gpu_id]
-./demo_match data/img1.png data/img2.png 0
+set(GCC_VERSION "10")
 ```
 
-Output: `data/matches.png` with match lines between images.
-
-### Real-time Video Demo
-
+then build normally:
 ```bash
-./demo_video [source] [gpu_id] [threshold]
-./demo_video 0           # Webcam
-./demo_video video.mp4   # Video file
+cmake ..
+make -j$(nproc)
 ```
-
-Keys: `q` quit, `+`/`-` adjust threshold.
-
-### Performance Benchmark
-
-```bash
-./benchmark [gpu_id] [num_runs] [threshold]
-./benchmark 0 200 3.0
-```
-
-Outputs performance tables at multiple resolutions with extraction, matching, and upload times.
-
-## Running Tests
-
-```bash
-# Individual tests
-./test_extract     # Feature extraction correctness
-./test_match       # Matching and quality tests
-./test_homography  # Geometric verification tests
-
-# All tests + benchmark
-bash scripts/run_benchmark.sh
-```
-
-### Test Results (RTX 4060 Ti)
-
-| Test Suite | Passed | Total | Rate |
-|------------|--------|-------|------|
-| test_extract | 10 | 10 | 100% |
-| test_match | 11 | 11 | 100% |
-| test_homography | 8 | 8 | 100% |
-| **Total** | **29** | **29** | **100%** |
-
-### Test Coverage
-
-| Test | What It Verifies |
-|------|-----------------|
-| BasicExtraction | Features detected, valid positions/scales |
-| DifferentThresholds | Higher threshold = fewer features |
-| DifferentOctaves | More octaves = more features |
-| Reproducibility | Identical results across runs |
-| ScaleUp | 2x upsampling detects more features |
-| SelfMatch | Self-matching gives perfect scores |
-| CrossMatch | Cross-image matching produces valid results |
-| Homography | RANSAC + refinement finds inliers |
-| Translation | Recovers known translation |
-| Rotation | Handles 10 degree rotation |
-| Scale | Handles 80% scale change |
-| PGMImages | Stereo pair matching |
-
-## API Reference
-
-### Core Functions
-
-```cpp
-// Initialize CUDA device
-void InitCuda(int devNum = 0);
-
-// Allocate/free temporary GPU memory for extraction
-float *AllocSiftTempMemory(int width, int height, int numOctaves, bool scaleUp = false);
-void FreeSiftTempMemory(float *memoryTmp);
-
-// Extract SIFT features from a GPU image
-void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves,
-                 double initBlur, float thresh, float lowestScale = 0.0f,
-                 bool scaleUp = false, float *tempMemory = 0);
-
-// Initialize/free SIFT data container
-void InitSiftData(SiftData &data, int num = 1024, bool host = false, bool dev = true);
-void FreeSiftData(SiftData &data);
-
-// Match two sets of SIFT features on GPU
-double MatchSiftData(SiftData &data1, SiftData &data2);
-
-// Find homography using RANSAC
-double FindHomography(SiftData &data, float *homography, int *numMatches,
-                      int numLoops = 1000, float minScore = 0.85f,
-                      float maxAmbiguity = 0.95f, float thresh = 5.0f);
-```
-
-### Data Structures
-
-```cpp
-struct SiftPoint {
-  float xpos, ypos;       // Sub-pixel position
-  float scale;            // Feature scale (sigma)
-  float sharpness;        // DoG response value
-  float edgeness;         // Edge response ratio
-  float orientation;      // Dominant orientation (degrees)
-  float score;            // Match correlation score
-  float ambiguity;        // Second-best / best ratio
-  int match;              // Index of best match
-  float match_xpos, match_ypos;  // Matched point position
-  float match_error;      // Reprojection error
-  float subsampling;      // Octave subsampling factor
-  float data[128];        // 128-D descriptor vector
-};
-
-struct SiftData {
-  int numPts;             // Number of detected features
-  int maxPts;             // Allocated capacity
-  SiftPoint *h_data;      // Host pointer
-  SiftPoint *d_data;      // Device pointer
-};
-```
-
-## File Structure
-
-```
-CudaSift/
-|-- CMakeLists.txt          # Modern CMake build (sm_89)
-|-- README.md               # This file
-|-- LICENSE                  # MIT License
-|
-|-- cudaSift.h              # Public API header
-|-- cudaSiftH.cu            # Host-side SIFT pipeline
-|-- cudaSiftH.h             # Host function declarations
-|-- cudaSiftD.cu            # Device kernels (DoG, keypoints, descriptors)
-|-- cudaSiftD.h             # Kernel constants and block sizes
-|-- cudaImage.cu            # GPU image container
-|-- cudaImage.h             # Image class declaration
-|-- cudautils.h             # CUDA utilities (error checking, timers, shuffle)
-|-- matching.cu             # Matching kernels + RANSAC homography
-|-- geomFuncs.cpp           # CPU homography refinement
-|-- mainSift.cpp            # Main demo program
-|
-|-- examples/
-|   |-- demo_extract.cpp    # Single-image extraction demo
-|   |-- demo_match.cpp      # Two-image matching demo
-|   +-- demo_video.cpp      # Real-time video demo
-|
-|-- tests/
-|   |-- benchmark.cpp       # Multi-resolution performance benchmark
-|   |-- test_extract.cpp    # Extraction correctness tests
-|   |-- test_match.cpp      # Matching quality tests
-|   +-- test_homography.cpp # Geometric verification tests
-|
-|-- scripts/
-|   |-- build.sh            # Build script
-|   +-- run_benchmark.sh    # Run all tests + benchmark
-|
-|-- data/
-|   |-- img1.png            # Test image 1 (1280x960)
-|   |-- img2.png            # Test image 2 (1280x960)
-|   |-- left.pgm            # Stereo left image
-|   +-- righ.pgm            # Stereo right image
-|
-+-- match.pdf               # Matching kernel optimization notes
-```
-
-## Ada Lovelace Optimizations
-
-This branch includes the following optimizations for the Ada Lovelace architecture:
-
-1. **sm_89 Compute Target** -- Native code generation for RTX 40-series GPUs
-2. **Fast Math** -- `--use_fast_math` for all CUDA kernels (intrinsic sin/cos/exp/sqrt)
-3. **Large L2 Cache** -- RTX 4060 Ti has 32 MB L2 cache, benefiting texture lookups and DoG pyramid reads
-4. **Warp Synchronization** -- All warp-level operations use `__shfl_sync` with full mask
-5. **Optimized Block Sizes** -- Tuned for 128 SMs and Ada Lovelace occupancy characteristics
-6. **C++17 / CUDA 17** -- Modern language standard support
-7. **Static Library** -- Core SIFT compiled as static library for faster linking
-
-## Algorithm Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `numOctaves` | 5 | Number of octaves in scale space |
-| `initBlur` | 1.0 | Initial Gaussian blur sigma |
-| `thresh` | 3.0 | DoG threshold for keypoint detection |
-| `lowestScale` | 0.0 | Minimum scale for features |
-| `scaleUp` | false | 2x upsample input for fine features |
-| `maxPts` | 32768 | Maximum number of features |
-| `minScore` | 0.85 | Minimum match score for RANSAC |
-| `maxAmbiguity` | 0.95 | Maximum ambiguity ratio for RANSAC |
-
-## References
-
-- David G. Lowe, "Distinctive Image Features from Scale-Invariant Keypoints," IJCV, 2004.
-- Original CudaSift by Marten Bjorkman: https://github.com/Celebrandil/CudaSift
-
-## License
-
-MIT License -- see [LICENSE](LICENSE) for details.

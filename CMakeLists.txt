@@ -1,117 +1,119 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 2.6)
 
-project(CudaSift VERSION 3.0.0 LANGUAGES CXX CUDA)
+project(cudaSift)
+set(cudaSift_VERSION_MAJOR 2)
+set(cudaSift_VERSION_MINOR 0)
+set(cudaSift_VERSION_PATCH 0)
 
-# ---- Build options ----
-option(BUILD_TESTS "Build test and benchmark programs" ON)
-option(BUILD_EXAMPLES "Build example programs" ON)
-option(USE_MANAGED_MEM "Use CUDA managed memory" OFF)
-option(VERBOSE_OUTPUT "Enable verbose timing output" ON)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-
-# ---- CUDA architecture: Ada Lovelace (RTX 4060 Ti) ----
-set(CMAKE_CUDA_ARCHITECTURES 89)
-
-# ---- Find OpenCV ----
-find_package(OpenCV REQUIRED)
-
-# ---- Compile definitions ----
-add_compile_definitions(
-  $<$<BOOL:${VERBOSE_OUTPUT}>:VERBOSE>
-  $<$<BOOL:${USE_MANAGED_MEM}>:MANAGEDMEM>
-)
-
-if(WIN32)
-  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
-endif()
-
-# ---- CUDA flags for Ada Lovelace optimization ----
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --use_fast_math")
-if(CMAKE_BUILD_TYPE STREQUAL "Release" OR NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 -lineinfo")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2")
-endif()
-
-# ---- CudaSift library ----
-add_library(cudasift_lib STATIC
-  cudaImage.cu
-  cudaImage.h
-  cudaSiftH.cu
-  cudaSiftH.h
-  cudaSiftD.h
-  cudaSift.h
-  cudautils.h
-  matching.cu
-  geomFuncs.cpp
-)
-
-target_include_directories(cudasift_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(cudasift_lib PUBLIC ${OpenCV_LIBS})
-set_target_properties(cudasift_lib PROPERTIES
-  CUDA_SEPARABLE_COMPILATION OFF
-  POSITION_INDEPENDENT_CODE ON
-)
-
-# ---- Main demo executable ----
-set_source_files_properties(mainSift.cpp PROPERTIES LANGUAGE CUDA)
-add_executable(cudasift mainSift.cpp)
-target_link_libraries(cudasift PRIVATE cudasift_lib)
-
-# ---- Examples ----
-if(BUILD_EXAMPLES)
-  set_source_files_properties(
-    examples/demo_extract.cpp
-    examples/demo_match.cpp
-    examples/demo_video.cpp
-    PROPERTIES LANGUAGE CUDA
-  )
-  add_executable(demo_extract examples/demo_extract.cpp)
-  target_link_libraries(demo_extract PRIVATE cudasift_lib)
-
-  add_executable(demo_match examples/demo_match.cpp)
-  target_link_libraries(demo_match PRIVATE cudasift_lib)
-
-  add_executable(demo_video examples/demo_video.cpp)
-  target_link_libraries(demo_video PRIVATE cudasift_lib)
-endif()
-
-# ---- Tests & Benchmarks ----
-if(BUILD_TESTS)
-  set_source_files_properties(
-    tests/benchmark.cpp
-    tests/test_extract.cpp
-    tests/test_match.cpp
-    tests/test_homography.cpp
-    PROPERTIES LANGUAGE CUDA
-  )
-  add_executable(benchmark tests/benchmark.cpp)
-  target_link_libraries(benchmark PRIVATE cudasift_lib)
-
-  add_executable(test_extract tests/test_extract.cpp)
-  target_link_libraries(test_extract PRIVATE cudasift_lib)
-
-  add_executable(test_match tests/test_match.cpp)
-  target_link_libraries(test_match PRIVATE cudasift_lib)
-
-  add_executable(test_homography tests/test_homography.cpp)
-  target_link_libraries(test_homography PRIVATE cudasift_lib)
-endif()
-
-# ---- Install ----
-install(TARGETS cudasift cudasift_lib
-  RUNTIME DESTINATION bin
-  ARCHIVE DESTINATION lib
-)
-install(FILES cudaSift.h cudaImage.h cudautils.h DESTINATION include)
-install(DIRECTORY data/ DESTINATION share/cudasift/data)
-
-# ---- CPack ----
-set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
-set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
-set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+set(CPACK_PACKAGE_VERSION_MAJOR "${cudaSift_VERSION_MAJOR}")
+set(CPACK_PACKAGE_VERSION_MINOR "${cudaSift_VERSION_MINOR}")
+set(CPACK_PACKAGE_VERSION_PATCH "${cudaSift_VERSION_PATCH}")
 set(CPACK_GENERATOR "ZIP")
 include(CPack)
+
+# =============================================================================
+# GCC VERSION CONFIGURATION
+# =============================================================================
+# You must specify the GCC version to use for CUDA compilation.
+# This is required because CUDA has specific GCC version compatibility requirements.
+#
+# Option 1: Set it here directly (uncomment and modify the line below)
+# set(GCC_VERSION "10")
+#
+# Option 2: Pass it as a CMake parameter
+# cmake .. -DGCC_VERSION=10
+#
+# Common compatible versions:
+#   - CUDA 11.x: GCC 7, 8, 9, 10
+#   - CUDA 12.x: GCC 9, 10, 11, 12
+# =============================================================================
+
+if(NOT DEFINED GCC_VERSION)
+  message(FATAL_ERROR 
+    "\n"
+    "=======================================================================\n"
+    "GCC_VERSION is not specified!\n"
+    "=======================================================================\n"
+    "Please specify the GCC version using one of the following methods:\n"
+    "\n"
+    "  1. Edit CMakeLists.txt and uncomment: set(GCC_VERSION \"10\")\n"
+    "  2. Pass as parameter: cmake .. -DGCC_VERSION=10\n"
+    "\n"
+    "Example: cmake .. -DGCC_VERSION=10\n"
+    "=======================================================================\n"
+  )
+endif()
+
+find_program(GCC_COMPILER gcc-${GCC_VERSION})
+find_program(GXX_COMPILER g++-${GCC_VERSION})
+
+if(NOT GCC_COMPILER)
+  message(FATAL_ERROR "gcc-${GCC_VERSION} not found! Please specify a valid GCC version.")
+endif()
+
+if(NOT GXX_COMPILER)
+  message(FATAL_ERROR "g++-${GCC_VERSION} not found! Please specify a valid GCC version.")
+endif()
+
+message(STATUS "Using GCC: ${GCC_COMPILER}")
+message(STATUS "Using G++: ${GXX_COMPILER}")
+
+find_package(OpenCV REQUIRED)
+find_package(CUDA)
+if (NOT CUDA_FOUND)
+  message(STATUS "CUDA not found. Project will not be built.")
+endif(NOT CUDA_FOUND)
+
+if (WIN32)
+  set(EXTRA_CXX_FLAGS "/DVERBOSE /D_CRT_SECURE_NO_WARNINGS ")
+  list(APPEND CUDA_NVCC_FLAGS "-arch=sm_35;--compiler-options;-O2;-DVERBOSE") 
+endif()
+if (UNIX)
+  if (APPLE)
+    set(EXTRA_CXX_FLAGS "-DVERBOSE -msse2")
+    list(APPEND CUDA_NVCC_FLAGS "-arch=sm_35;--compiler-options;-O2;-DVERBOSE") 
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -msse2 ")
+    list(APPEND CUDA_NVCC_FLAGS "-lineinfo;-ccbin;${GXX_COMPILER};--compiler-options;-O2;-D_FORCE_INLINES;-DVERBOSE_NOT")
+  endif()
+endif()
+
+set(cuda_sources
+  cudaImage.cu  
+  cudaImage.h  
+  cudaSiftH.cu 
+  cudaSiftH.h  
+  matching.cu  
+  cudaSiftD.h  
+  cudaSift.h  
+  cudautils.h
+)  
+
+set(sources
+  geomFuncs.cpp  
+  mainSift.cpp  
+)
+
+include_directories(
+  ${CMAKE_CURRENT_SOURCE_DIR} 
+)
+
+cuda_add_executable(cudasift ${cuda_sources} ${sources} OPTIONS -arch=sm_35)
+
+set_target_properties(cudasift PROPERTIES
+  COMPILE_FLAGS "${EXTRA_CXX_FLAGS}"			   
+)
+
+target_link_libraries(cudasift ${CUDA_cudadevrt_LIBRARY} ${OpenCV_LIBS})
+
+install(FILES 
+  ${cuda_sources} 
+  ${sources}
+  cudaSiftD.cu
+  CMakeLists.txt
+  Copyright.txt
+  DESTINATION .
+)
+install(FILES data/left.pgm data/righ.pgm
+  DESTINATION data
+)
