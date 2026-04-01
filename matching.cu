@@ -298,6 +298,11 @@ __global__ void CleanMatches(SiftPoint *sift1, int numPts1)
 #define NRX    2
 #define NDIM 128
 
+// WARNING: FindMaxCorr5 through FindMaxCorr9 have the same out-of-bounds
+// access bugs that were fixed below in FindMaxCorr10 (min() clamping instead
+// of bounds check + zero-padding). They are currently unreachable (mode is
+// hardcoded to 10) but should be fixed if re-enabled.
+
 __global__ void FindMaxCorr10(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2)
 {
   __shared__ float4 buffer1[M7W*NDIM/4]; 
@@ -305,10 +310,15 @@ __global__ void FindMaxCorr10(SiftPoint *sift1, SiftPoint *sift2, int numPts1, i
   int tx = threadIdx.x;
   int ty = threadIdx.y;
   int bp1 = M7W*blockIdx.x;
-  for (int j=ty;j<M7W;j+=M7H/M7R) {    
-    int p1 = min(bp1 + j, numPts1 - 1);
-    for (int d=tx;d<NDIM/4;d+=M7W)
-      buffer1[j*NDIM/4 + (d + j)%(NDIM/4)] = ((float4*)&sift1[p1].data)[d];
+  for (int j=ty;j<M7W;j+=M7H/M7R) {
+    int p1 = bp1 + j;
+    if (p1 < numPts1) {
+      for (int d=tx;d<NDIM/4;d+=M7W)
+        buffer1[j*NDIM/4 + (d + j)%(NDIM/4)] = ((float4*)&sift1[p1].data)[d];
+    } else {
+      for (int d=tx;d<NDIM/4;d+=M7W)
+        buffer1[j*NDIM/4 + (d + j)%(NDIM/4)] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
   }
       
   float max_score[NRX];
@@ -322,11 +332,16 @@ __global__ void FindMaxCorr10(SiftPoint *sift1, SiftPoint *sift2, int numPts1, i
   int idx = ty*M7W + tx;
   int ix = idx%(M7W/NRX);
   int iy = idx/(M7W/NRX);
-  for (int bp2=0;bp2<numPts2 - M7H + 1;bp2+=M7H) {
-    for (int j=ty;j<M7H;j+=M7H/M7R) {      
-      int p2 = min(bp2 + j, numPts2 - 1);
-      for (int d=tx;d<NDIM/4;d+=M7W)
-	buffer2[j*NDIM/4 + d] = ((float4*)&sift2[p2].data)[d];
+  for (int bp2=0;bp2<numPts2;bp2+=M7H) {
+    for (int j=ty;j<M7H;j+=M7H/M7R) {
+      int p2 = bp2 + j;
+      if (p2 < numPts2) {
+        for (int d=tx;d<NDIM/4;d+=M7W)
+	  buffer2[j*NDIM/4 + d] = ((float4*)&sift2[p2].data)[d];
+      } else {
+        for (int d=tx;d<NDIM/4;d+=M7W)
+	  buffer2[j*NDIM/4 + d] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+      }
     }
     __syncthreads();
 
@@ -354,7 +369,7 @@ __global__ void FindMaxCorr10(SiftPoint *sift1, SiftPoint *sift2, int numPts1, i
 	  if (score[dy][i]>max_score[i]) {
 	    sec_score[i] = max_score[i];
 	    max_score[i] = score[dy][i];     
-	    index[i] = min(bp2 + M7R*iy + dy, numPts2-1);
+	    index[i] = bp2 + M7R*iy + dy;
 	  } else if (score[dy][i]>sec_score[i])
 	    sec_score[i] = score[dy][i]; 
 	}
@@ -375,7 +390,7 @@ __global__ void FindMaxCorr10(SiftPoint *sift1, SiftPoint *sift2, int numPts1, i
   }
   __syncthreads();
   
-  if (ty==0) {
+  if (ty==0 && (bp1 + tx) < numPts1) {
     float max_score = scores1[tx];
     float sec_score = scores2[tx];
     int index = indices[tx];
@@ -383,7 +398,7 @@ __global__ void FindMaxCorr10(SiftPoint *sift1, SiftPoint *sift2, int numPts1, i
       if (index != indices[y*M7W + tx]) {
 	if (scores1[y*M7W + tx]>max_score) {
 	  sec_score = max(max_score, sec_score);
-	  max_score = scores1[y*M7W + tx]; 
+	  max_score = scores1[y*M7W + tx];
 	  index = indices[y*M7W + tx];
 	} else if (scores1[y*M7W + tx]>sec_score)
 	  sec_score = scores1[y*M7W + tx];
@@ -392,10 +407,16 @@ __global__ void FindMaxCorr10(SiftPoint *sift1, SiftPoint *sift2, int numPts1, i
           sec_score = scores2[y*M7W + tx];
       }
     sift1[bp1 + tx].score = max_score;
-    sift1[bp1 + tx].match = index;
-    sift1[bp1 + tx].match_xpos = sift2[index].xpos;
-    sift1[bp1 + tx].match_ypos = sift2[index].ypos;
     sift1[bp1 + tx].ambiguity = sec_score / (max_score + 1e-6f);
+    if (index >= 0 && index < numPts2) {
+      sift1[bp1 + tx].match = index;
+      sift1[bp1 + tx].match_xpos = sift2[index].xpos;
+      sift1[bp1 + tx].match_ypos = sift2[index].ypos;
+    } else {
+      sift1[bp1 + tx].match = -1;
+      sift1[bp1 + tx].match_xpos = 0.0f;
+      sift1[bp1 + tx].match_ypos = 0.0f;
+    }
   }
 }
   
