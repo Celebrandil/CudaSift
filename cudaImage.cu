@@ -102,10 +102,23 @@ double CudaImage::CopyToTexture(CudaImage &dst, bool host)
     return 0.0;
   }
   TimerGPU timer(0);
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+  // cudaMemcpyToArray is deprecated and unavailable in current HIP. The original
+  // linear copy moved sizeof(float)*pitch*dst.height bytes from the contiguous
+  // source (row stride = this->pitch). Reproduce it byte-for-byte with a 2D
+  // array copy whose source stride and per-row width both equal the source
+  // row stride this->pitch (spitch == width => no source row gaps).
+  size_t rowBytes = sizeof(float)*pitch;
+  if (host)
+    safeCall(hipMemcpy2DToArray((cudaArray *)dst.t_data, 0, 0, h_data, rowBytes, rowBytes, dst.height, cudaMemcpyHostToDevice));
+  else
+    safeCall(hipMemcpy2DToArray((cudaArray *)dst.t_data, 0, 0, d_data, rowBytes, rowBytes, dst.height, cudaMemcpyDeviceToDevice));
+#else
   if (host)
     safeCall(cudaMemcpyToArray((cudaArray *)dst.t_data, 0, 0, h_data, sizeof(float)*pitch*dst.height, cudaMemcpyHostToDevice));
   else
     safeCall(cudaMemcpyToArray((cudaArray *)dst.t_data, 0, 0, d_data, sizeof(float)*pitch*dst.height, cudaMemcpyDeviceToDevice));
+#endif
   safeCall(cudaDeviceSynchronize());
   double gpuTime = timer.read();
 #ifdef VERBOSE
