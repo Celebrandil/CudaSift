@@ -144,7 +144,7 @@ Input Image (Host -> Device)
 
 ### Prerequisites
 
-- **CUDA Toolkit** 11.0+ (recommended 12.x for Ada Lovelace)
+- **CUDA Toolkit** 11.0+ (recommended 12.x for Ada Lovelace), or **ROCm** 6.x+ for AMD GPUs
 - **OpenCV** 4.x
 - **CMake** 3.18+
 - **C++17** compatible compiler
@@ -171,6 +171,24 @@ make -j$(nproc)
 bash scripts/build.sh Release
 ```
 
+### Build for AMD GPUs (ROCm/HIP)
+
+Set `USE_HIP=ON` to build for AMD GPUs with ROCm. The same sources compile
+through the HIP toolchain; a force-included compatibility header maps the CUDA
+runtime and texture symbols to their HIP equivalents, so the NVIDIA build is
+unchanged. Select the target architecture with `CMAKE_HIP_ARCHITECTURES`
+(defaults to `gfx90a`):
+
+```bash
+mkdir build-hip && cd build-hip
+cmake .. -DUSE_HIP=ON \
+  -DCMAKE_HIP_ARCHITECTURES=gfx1100 \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build . -j$(nproc)
+```
+
+Tested on gfx90a (CDNA2), gfx1100 (RDNA3), and gfx1201 (RDNA4).
+
 ### CMake Options
 
 | Option | Default | Description |
@@ -179,6 +197,7 @@ bash scripts/build.sh Release
 | `BUILD_EXAMPLES` | ON | Build example programs |
 | `USE_MANAGED_MEM` | OFF | Use CUDA managed memory |
 | `VERBOSE_OUTPUT` | ON | Enable verbose timing output |
+| `USE_HIP` | OFF | Build for AMD GPUs with ROCm/HIP |
 
 ## Usage
 
