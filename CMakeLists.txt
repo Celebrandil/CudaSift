@@ -140,10 +140,9 @@ if(USE_HIP)
   if(BUILD_TESTS)
     list(APPEND CUDASIFT_TARGETS benchmark test_extract test_match test_homography)
   endif()
+  # project(... LANGUAGES ... HIP) above auto-detects the host GPU arch (and
+  # errors on a no-GPU host); pass -DCMAKE_HIP_ARCHITECTURES to override.
   foreach(tgt ${CUDASIFT_TARGETS})
-    if(NOT DEFINED CMAKE_HIP_ARCHITECTURES OR CMAKE_HIP_ARCHITECTURES STREQUAL "")
-      set(CMAKE_HIP_ARCHITECTURES "gfx90a")
-    endif()
     set_target_properties(${tgt} PROPERTIES HIP_ARCHITECTURES "${CMAKE_HIP_ARCHITECTURES}")
     # USE_HIP selects the HIP branch of cuda_to_hip.h. __HIP_PLATFORM_AMD__ is
     # only defined once the HIP runtime header is included, so it cannot gate
