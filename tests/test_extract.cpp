@@ -144,6 +144,94 @@ void TestDifferentOctaves()
   CHECK(counts[1] >= counts[0], "More octaves = more or equal features");
 }
 
+// Points of ExtractSift with inputBlur (see cudaSift.h), sorted by position and scale, as
+// their order varies between runs. topOnly: only those of the top octave.
+static std::vector<SiftPoint> ExactPoints(CudaImage &img, double initBlur, float inputBlur, bool topOnly)
+{
+  SiftData data;
+  InitSiftData(data, 32768, true, true);
+  ExtractSift(data, img, 5, initBlur, 3.0f, 0.0f, false, NULL, inputBlur);
+  std::vector<SiftPoint> pts;
+  for (int i = 0; i < data.numPts; i++)
+    if (!topOnly || data.h_data[i].subsampling == 1.0f)
+      pts.push_back(data.h_data[i]);
+  FreeSiftData(data);
+  std::sort(pts.begin(), pts.end(), [](const SiftPoint &a, const SiftPoint &b) {
+    if (a.ypos != b.ypos) return a.ypos < b.ypos;
+    if (a.xpos != b.xpos) return a.xpos < b.xpos;
+    return a.scale < b.scale;
+  });
+  return pts;
+}
+
+static bool SamePoints(const std::vector<SiftPoint> &a, const std::vector<SiftPoint> &b)
+{
+  if (a.size() != b.size())
+    return false;
+  for (size_t i = 0; i < a.size(); i++)
+    if (a[i].xpos != b[i].xpos || a[i].ypos != b[i].ypos || a[i].scale != b[i].scale)
+      return false;
+  return true;
+}
+
+// Share of the points of a that b has too (within 0.1 px and 2% in scale)
+static double SharedPoints(const std::vector<SiftPoint> &a, const std::vector<SiftPoint> &b)
+{
+  int n = 0;
+  for (const SiftPoint &p : a)
+    for (const SiftPoint &q : b)
+      if (std::fabs(p.xpos - q.xpos) < 0.1f && std::fabs(p.ypos - q.ypos) < 0.1f && std::fabs(p.scale/q.scale - 1.0f) < 0.02f) {
+        n++;
+        break;
+      }
+  return (double)n/std::max(a.size(), b.size());
+}
+
+// ExtractSift with inputBlur gives each level its nominal blur, whatever initBlur is: in
+// theory the levels of the top octave, and so its points, don't depend on initBlur; in
+// practice they still do through the sampling of the small kernels. Without inputBlur, the
+// levels have an extra blur of initBlur.
+void TestExactScaleSpace()
+{
+  std::cout << "\n--- Test: Scale space with inputBlur ---" << std::endl;
+
+  cv::Mat img = cv::imread("data/img1.png", 0);
+  if (img.empty()) return;
+  cv::Mat fimg;
+  img.convertTo(fimg, CV_32FC1);
+  CudaImage cudaImg;
+  cudaImg.Allocate(fimg.cols, fimg.rows, iAlignUp(fimg.cols, 128), false, NULL, (float *)fimg.data);
+  cudaImg.Download();
+
+  // inputBlur < 0: as ExtractSift without it
+  SiftData data;
+  InitSiftData(data, 32768, true, true);
+  ExtractSift(data, cudaImg, 5, 1.0f, 3.0f, 0.0f, false);
+  std::vector<SiftPoint> plain(data.h_data, data.h_data + data.numPts);
+  FreeSiftData(data);
+  std::sort(plain.begin(), plain.end(), [](const SiftPoint &a, const SiftPoint &b) {
+    if (a.ypos != b.ypos) return a.ypos < b.ypos;
+    if (a.xpos != b.xpos) return a.xpos < b.xpos;
+    return a.scale < b.scale;
+  });
+  CHECK(SamePoints(plain, ExactPoints(cudaImg, 1.0, -1.0f, false)), "inputBlur < 0 gives the points of ExtractSift without inputBlur");
+
+  // Top octave with initBlur 0.4 and 0.6
+  double sharedOld = SharedPoints(ExactPoints(cudaImg, 0.4, -1.0f, true), ExactPoints(cudaImg, 0.6, -1.0f, true));
+  double sharedNew = SharedPoints(ExactPoints(cudaImg, 0.4, 0.0f, true), ExactPoints(cudaImg, 0.6, 0.0f, true));
+  std::cout << "    top octave points shared by initBlur 0.4 and 0.6: " << sharedOld << " without inputBlur, " << sharedNew << " with inputBlur 0" << std::endl;
+  CHECK(sharedNew >= 0.25 && sharedNew > 1.4*sharedOld, "With inputBlur, the top octave depends less on initBlur");
+
+  // Limit of sqrt(initBlur^2 + inputBlur^2): 0.80, so initBlur 1.0 is lowered
+  const double s0 = std::pow(2.0, -1.0/5), bmax = std::sqrt(s0*s0 - 0.12);
+  std::vector<SiftPoint> over = ExactPoints(cudaImg, 1.0, 0.5f, false);
+  std::vector<SiftPoint> limit = ExactPoints(cudaImg, std::sqrt(bmax*bmax - 0.25), 0.5f, false);
+  std::vector<SiftPoint> usual = ExactPoints(cudaImg, 0.6, 0.5f, false);
+  std::cout << "    initBlur 1.0, at the limit, and 0.6 (inputBlur 0.5): " << over.size() << ", " << limit.size() << ", " << usual.size() << " points" << std::endl;
+  CHECK(SamePoints(over, limit), "initBlur is lowered to the limit");
+  CHECK(limit.size() < 1.15*usual.size(), "No surge of points at the limit");
+}
+
 void TestReproducibility()
 {
   std::cout << "\n--- Test: Reproducibility ---" << std::endl;
@@ -244,6 +332,7 @@ int main(int argc, char **argv)
   TestBasicExtraction();
   TestDifferentThresholds();
   TestDifferentOctaves();
+  TestExactScaleSpace();
   TestReproducibility();
   TestScaleUp();
 

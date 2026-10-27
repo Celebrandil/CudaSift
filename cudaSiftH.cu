@@ -438,11 +438,55 @@ double LowPass(CudaImage &res, CudaImage &src, float scale)
 
 //==================== Multi-scale functions ===================//
 
-void PrepareLaplaceKernels(int numOctaves, float initBlur, float *kernel)
+// Blur of the image after LowPass, from which the Laplace kernels of the current
+// ExtractSift call start, or -1 for the kernels of previous versions (see ExtractSift with
+// inputBlur in cudaSift.h)
+static thread_local float laplaceBlur = -1.0f;
+
+// laplaceBlur is limited so that the first level still gets an extra blur of variance at
+// least 0.12: a sampled Gaussian of smaller sigma has a much smaller variance than sigma^2,
+// so the first levels would not have the blurs assumed here. On HPatches, the keypoints of
+// the first detection layer of the top octave multiply once s0^2 - b^2 < 0.066 (b > 0.83,
+// with s0 = 2^(-1/NUM_SCALES) the sigma of the first level). s0^2 - b^2 >= 0.12 is b <= 0.80.
+static float LimitSiftBlur(double &initBlur, float &inputBlur)
+{
+  const double s0 = pow(2.0, -1.0/NUM_SCALES);
+  const double bmax = sqrt(s0*s0 - 0.12);
+  double b = sqrt(initBlur*initBlur + inputBlur*inputBlur);
+  if (b>bmax) {
+    static thread_local bool warned = false;   // one message per thread
+    if (inputBlur>bmax)
+      inputBlur = (float)bmax;
+    initBlur = sqrt(std::max(bmax*bmax - (double)inputBlur*inputBlur, 0.0));
+    if (!warned)
+      printf("ExtractSift: sqrt(initBlur^2 + inputBlur^2) is limited to %.2f: initBlur %.3f, inputBlur %.3f\n", bmax, initBlur, inputBlur);
+    warned = true;
+    b = bmax;
+  }
+  return (float)b;
+}
+
+void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double initBlur, float thresh, float lowestScale, bool scaleUp, float *tempMemory, float inputBlur)
+{
+  if (inputBlur<0.0f) {
+    ExtractSift(siftData, img, numOctaves, initBlur, thresh, lowestScale, scaleUp, tempMemory);
+    return;
+  }
+  float blur = inputBlur*(scaleUp ? 2.0f : 1.0f);   // in the upsampled image with scaleUp
+  laplaceBlur = LimitSiftBlur(initBlur, blur);
+  ExtractSift(siftData, img, numOctaves, initBlur, thresh, lowestScale, scaleUp, tempMemory);
+  laplaceBlur = -1.0f;
+}
+
+// Gaussian kernels of the levels of each octave, from the blur initBlur of its base image.
+// exact: the next octave's base is the base filtered by ScaleDown (a Gaussian of variance
+// 0.5) and subsampled by 2. Otherwise, as in previous versions, ScaleDown's 0.5 is taken as a
+// sigma.
+static void PrepareLaplaceKernels(int numOctaves, float initBlur, float *kernel, bool exact)
 {
   if (numOctaves>1) {
-    float totInitBlur = (float)sqrt(initBlur*initBlur + 0.5f*0.5f) / 2.0f;
-    PrepareLaplaceKernels(numOctaves-1, totInitBlur, kernel);
+    float totInitBlur = (float)sqrt(initBlur*initBlur + (exact ? 0.5f : 0.5f*0.5f)) / 2.0f;
+    PrepareLaplaceKernels(numOctaves-1, totInitBlur, kernel, exact);
   }
   float scale = pow(2.0f, -1.0f/NUM_SCALES);
   float diffScale = pow(2.0f, 1.0f/NUM_SCALES);
@@ -457,6 +501,17 @@ void PrepareLaplaceKernels(int numOctaves, float initBlur, float *kernel)
       kernel[numOctaves*12*16 + 16*i + j] /= kernelSum;
     scale *= diffScale;
   }
+}
+
+// initBlur: the blur of the top octave's base image. Previous versions take it as 0 (the
+// callers pass 0) although LowPass has blurred the image; with laplaceBlur >= 0 (ExtractSift
+// with inputBlur), the kernels start from laplaceBlur instead.
+void PrepareLaplaceKernels(int numOctaves, float initBlur, float *kernel)
+{
+  if (laplaceBlur>=0.0f)
+    PrepareLaplaceKernels(numOctaves, laplaceBlur, kernel, true);
+  else
+    PrepareLaplaceKernels(numOctaves, initBlur, kernel, false);
 }
  
 double LaplaceMulti(cudaTextureObject_t texObj, CudaImage &baseImage, CudaImage *results, int octave) 

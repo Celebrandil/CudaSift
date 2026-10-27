@@ -388,9 +388,12 @@ This branch includes the following optimizations for the Ada Lovelace architectu
 | `thresh` | 3.0 | DoG threshold for keypoint detection |
 | `lowestScale` | 0.0 | Minimum scale for features |
 | `scaleUp` | false | 2x upsample input for fine features |
+| `inputBlur` | -1 | Blur already in the input image (sigma); 0 or more: scale space with exact level blurs |
 | `maxPts` | 32768 | Maximum number of features |
 | `minScore` | 0.85 | Minimum match score for RANSAC |
 | `maxAmbiguity` | 0.95 | Maximum ambiguity ratio for RANSAC |
+
+Recommended: the `ExtractSift` overload with `inputBlur` 0.5 and `initBlur` 0.6, which gives each scale level its nominal blur (see `cudaSift.h`). With the same `thresh` it finds more features: raise `thresh` to keep the same number.
 
 ## References
 
