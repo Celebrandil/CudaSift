@@ -177,6 +177,7 @@ bash scripts/build.sh Release
 |--------|---------|-------------|
 | `BUILD_TESTS` | ON | Build test and benchmark programs |
 | `BUILD_EXAMPLES` | ON | Build example programs |
+| `CMAKE_CUDA_ARCHITECTURES` | 89 | Target GPU architecture(s), e.g. `75` for a Tesla T4 (also `CUDAARCHS`) |
 | `USE_MANAGED_MEM` | OFF | Use CUDA managed memory |
 | `VERBOSE_OUTPUT` | ON | Enable verbose timing output |
 

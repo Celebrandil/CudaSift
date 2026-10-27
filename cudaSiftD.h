@@ -7,6 +7,11 @@
 
 #define NUM_SCALES      5
 
+// Maximum number of octaves. Octaves are numbered from 1 to MAX_OCTAVES: d_PointCounter
+// (counters 2*octave-1 .. 2*octave+1) and d_LaplaceKernel (indexed by octave) are sized
+// for them.
+#define MAX_OCTAVES     7
+
 // Scale down thread block width
 #define SCALEDOWN_W    64 // 60 
 

@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.18)
 
+# ---- CUDA architecture: defaults to Ada Lovelace (RTX 4060 Ti) ----
+# Override with -DCMAKE_CUDA_ARCHITECTURES=75 (e.g. Tesla T4) or the CUDAARCHS env var.
+# Must be set before project(), which otherwise initializes it to the compiler default.
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT DEFINED ENV{CUDAARCHS})
+  set(CMAKE_CUDA_ARCHITECTURES 89)
+endif()
+
 project(CudaSift VERSION 3.0.0 LANGUAGES CXX CUDA)
 
 # ---- Build options ----
@@ -12,9 +19,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-
-# ---- CUDA architecture: Ada Lovelace (RTX 4060 Ti) ----
-set(CMAKE_CUDA_ARCHITECTURES 89)
 
 # ---- Find OpenCV ----
 find_package(OpenCV REQUIRED)

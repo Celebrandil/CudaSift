@@ -229,6 +229,40 @@ void TestPGMImages()
   FreeSiftData(siftData2);
 }
 
+// Regression test: when no match passed the filter, cv::solve
+// failed on the zero matrix and ImproveHomography replaced the homography by zeros
+void TestImproveHomographyNoInliers()
+{
+  std::cout << "\n--- Test: ImproveHomography without usable matches ---" << std::endl;
+
+  const int numPts = 20;
+  SiftData data;
+  InitSiftData(data, numPts, true, true);
+#ifdef MANAGEDMEM
+  SiftPoint *pts = data.m_data;
+#else
+  SiftPoint *pts = data.h_data;
+#endif
+  for (int i = 0; i < numPts; i++) {
+    SiftPoint &pt = pts[i];
+    pt.xpos = pt.match_xpos = 50.0f + 37.0f*(i%5) + 3.0f*i;
+    pt.ypos = pt.match_ypos = 40.0f + 29.0f*(i/5) + 2.0f*(i%3);
+    pt.score = 1.0f;
+    pt.ambiguity = 1.0f;   // all matches rejected by maxAmbiguity = 0.8
+  }
+  data.numPts = numPts;
+
+  float homography[9] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+  ImproveHomography(data, homography, 5, 0.0f, 0.8f, 3.0f);
+  float err = 0.0f;
+  for (int i = 0; i < 9; i++)
+    err = fmaxf(err, fabsf(homography[i] - (i%4==0 ? 1.0f : 0.0f)));
+  std::cout << "    max deviation from the identity: " << err << std::endl;
+  CHECK(err < 1e-6f, "Homography unchanged when no match can refine it");
+
+  FreeSiftData(data);
+}
+
 int main(int argc, char **argv)
 {
   int devNum = 0;
@@ -244,6 +278,7 @@ int main(int argc, char **argv)
   TestRotation();
   TestScale();
   TestPGMImages();
+  TestImproveHomographyNoInliers();
 
   std::cout << "\n=============================================" << std::endl;
   std::cout << "  Results: " << testsPassed << " passed, " << testsFailed << " failed" << std::endl;
