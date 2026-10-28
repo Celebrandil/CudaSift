@@ -954,7 +954,7 @@ __global__ void ComputeHomographies(float *coord, int *randPts, float *homo,
 #define TESTHOMO_LOOPS 16 // number of loops per block,  alt.  8, 16 
 
 __global__ void TestHomographies(float *d_coord, float *d_homo, 
-  int *d_counts, int numPts, float thresh2)
+  int *d_counts, int numPts, int numPtsUp, float thresh2)
 {
   __shared__ float homo[8*TESTHOMO_LOOPS];
   __shared__ int cnts[TESTHOMO_TESTS*TESTHOMO_LOOPS];
@@ -970,10 +970,10 @@ __global__ void TestHomographies(float *d_coord, float *d_homo,
     a[i] = homo[ty*8+i];
   int cnt = 0;
   for (int i=tx;i<numPts;i+=TESTHOMO_TESTS) {
-    float x1 = d_coord[i+0*numPts];
-    float y1 = d_coord[i+1*numPts];
-    float x2 = d_coord[i+2*numPts];
-    float y2 = d_coord[i+3*numPts];
+    float x1 = d_coord[i+0*numPtsUp];
+    float y1 = d_coord[i+1*numPtsUp];
+    float x2 = d_coord[i+2*numPtsUp];
+    float y2 = d_coord[i+3*numPtsUp];
     float nomx = __fmul_rz(a[0],x1) + __fmul_rz(a[1],y1) + a[2];
     float nomy = __fmul_rz(a[3],x1) + __fmul_rz(a[4],y1) + a[5];
     float deno = __fmul_rz(a[6],x1) + __fmul_rz(a[7],y1) + 1.0f;
@@ -999,6 +999,25 @@ __global__ void TestHomographies(float *d_coord, float *d_homo,
 }
 
 //================= Host matching functions =====================//
+
+// Whether the 4 matches of a RANSAC sample give the triangles they form the same
+// orientation in both images, as checked by OpenCV's findHomography, COLMAP and PoseLib.
+// A homography through a sample that fails is orientation-reversing or degenerate:
+// it can't come from a camera viewing a plane, so the sample gives no hypothesis.
+// coord holds x1, y1, x2, y2 with the given stride.
+static bool SameOrientation(const float *coord, int stride, const int *sample)
+{
+  static const int tri[4][3] = {{0, 1, 2}, {0, 1, 3}, {2, 3, 0}, {2, 3, 1}};
+  const float *x1 = coord, *y1 = coord + stride, *x2 = coord + 2*stride, *y2 = coord + 3*stride;
+  for (int t=0;t<4;t++) {
+    const int a = sample[tri[t][0]], b = sample[tri[t][1]], c = sample[tri[t][2]];
+    double d1 = ((double)x1[b] - x1[a])*((double)y1[c] - y1[a]) - ((double)y1[b] - y1[a])*((double)x1[c] - x1[a]);
+    double d2 = ((double)x2[b] - x2[a])*((double)y2[c] - y2[a]) - ((double)y2[b] - y2[a])*((double)x2[c] - x2[a]);
+    if (d1*d2<0.0)
+      return false;
+  }
+  return true;
+}
 
 double FindHomography(SiftData &data, float *homography, int *numMatches, int numLoops, float minScore, float maxAmbiguity, float thresh)
 {
@@ -1041,6 +1060,21 @@ double FindHomography(SiftData &data, float *homography, int *numMatches, int nu
   free(h_scores);
   free(h_ambiguities);
   if (numValid>=8) {
+    // Coordinates of the valid points only, so that the inliers are counted among the
+    // matches the hypotheses are sampled from
+    int numValidUp = iDivUp(numValid, 16)*16;
+    float *h_coord = (float *)malloc(4*sizeof(float)*numPts);
+    float *h_valid = (float *)calloc(4*numValidUp, sizeof(float));
+    safeCall(cudaMemcpy2D(&h_coord[0*numPts], szFl, &d_sift[0].xpos, szPt, szFl, numPts, cudaMemcpyDeviceToHost));
+    safeCall(cudaMemcpy2D(&h_coord[1*numPts], szFl, &d_sift[0].ypos, szPt, szFl, numPts, cudaMemcpyDeviceToHost));
+    safeCall(cudaMemcpy2D(&h_coord[2*numPts], szFl, &d_sift[0].match_xpos, szPt, szFl, numPts, cudaMemcpyDeviceToHost));
+    safeCall(cudaMemcpy2D(&h_coord[3*numPts], szFl, &d_sift[0].match_ypos, szPt, szFl, numPts, cudaMemcpyDeviceToHost));
+    for (int c=0;c<4;c++)
+      for (int i=0;i<numValid;i++)
+        h_valid[i+c*numValidUp] = h_coord[validPts[i]+c*numPts];
+    safeCall(cudaMemcpy(d_coord, h_valid, 4*sizeof(float)*numValidUp, cudaMemcpyHostToDevice));
+    free(h_coord);
+    bool *h_sameOrientation = (bool *)malloc(sizeof(bool)*numLoops);
     for (int i=0;i<numLoops;i++) {
       int p1 = rand() % numValid;
       int p2 = rand() % numValid;
@@ -1049,33 +1083,35 @@ double FindHomography(SiftData &data, float *homography, int *numMatches, int nu
       while (p2==p1) p2 = rand() % numValid;
       while (p3==p1 || p3==p2) p3 = rand() % numValid;
       while (p4==p1 || p4==p2 || p4==p3) p4 = rand() % numValid;
-      h_randPts[i+0*numLoops] = validPts[p1];
-      h_randPts[i+1*numLoops] = validPts[p2];
-      h_randPts[i+2*numLoops] = validPts[p3];
-      h_randPts[i+3*numLoops] = validPts[p4];
+      h_randPts[i+0*numLoops] = p1;
+      h_randPts[i+1*numLoops] = p2;
+      h_randPts[i+2*numLoops] = p3;
+      h_randPts[i+3*numLoops] = p4;
+      const int sample[4] = {p1, p2, p3, p4};
+      h_sameOrientation[i] = SameOrientation(h_valid, numValidUp, sample);
     }
+    free(h_valid);
     safeCall(cudaMemcpy(d_randPts, h_randPts, randSize, cudaMemcpyHostToDevice));
-    safeCall(cudaMemcpy2D(&d_coord[0*numPtsUp], szFl, &d_sift[0].xpos, szPt, szFl, numPts, cudaMemcpyDeviceToDevice));
-    safeCall(cudaMemcpy2D(&d_coord[1*numPtsUp], szFl, &d_sift[0].ypos, szPt, szFl, numPts, cudaMemcpyDeviceToDevice));
-    safeCall(cudaMemcpy2D(&d_coord[2*numPtsUp], szFl, &d_sift[0].match_xpos, szPt, szFl, numPts, cudaMemcpyDeviceToDevice));
-    safeCall(cudaMemcpy2D(&d_coord[3*numPtsUp], szFl, &d_sift[0].match_ypos, szPt, szFl, numPts, cudaMemcpyDeviceToDevice));
-    ComputeHomographies<<<numLoops/16, 16>>>(d_coord, d_randPts, d_homo, numPtsUp);
+    ComputeHomographies<<<numLoops/16, 16>>>(d_coord, d_randPts, d_homo, numValidUp);
     safeCall(cudaDeviceSynchronize());
     checkMsg("ComputeHomographies() execution failed\n");
     dim3 blocks(1, numLoops/TESTHOMO_LOOPS);
     dim3 threads(TESTHOMO_TESTS, TESTHOMO_LOOPS);
-    TestHomographies<<<blocks, threads>>>(d_coord, d_homo, d_randPts, numPtsUp, thresh*thresh);
+    TestHomographies<<<blocks, threads>>>(d_coord, d_homo, d_randPts, numValid, numValidUp, thresh*thresh);
     safeCall(cudaDeviceSynchronize());
     checkMsg("TestHomographies() execution failed\n");
     safeCall(cudaMemcpy(h_randPts, d_randPts, sizeof(int)*numLoops, cudaMemcpyDeviceToHost));
     int maxIndex = -1, maxCount = -1;
     for (int i=0;i<numLoops;i++) 
-      if (h_randPts[i]>maxCount) {
+      if (h_sameOrientation[i] && h_randPts[i]>maxCount) {
 	maxCount = h_randPts[i];
 	maxIndex = i;
       }
-    *numMatches = maxCount;
-    safeCall(cudaMemcpy2D(homography, szFl, &d_homo[maxIndex], sizeof(float)*numLoops, szFl, 8, cudaMemcpyDeviceToHost));
+    free(h_sameOrientation);
+    if (maxIndex>=0) {
+      *numMatches = maxCount;
+      safeCall(cudaMemcpy2D(homography, szFl, &d_homo[maxIndex], sizeof(float)*numLoops, szFl, 8, cudaMemcpyDeviceToHost));
+    }
   }
   free(validPts);
   free(h_randPts);

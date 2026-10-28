@@ -296,7 +296,8 @@ __device__ float FastAtan2(float y, float x)
 {
   float absx = abs(x);
   float absy = abs(y);
-  float a = __fdiv_rn(min(absx, absy),  max(absx, absy));
+  float maxxy = max(absx, absy);
+  float a = (maxxy>0.0f ? __fdiv_rn(min(absx, absy), maxxy) : 0.0f);  // FastAtan2(0, 0) = 0, not NaN
   float s = a*a;
   float r = ((-0.0464964749f*s + 0.15931422f)*s - 0.327622764f)*s*a + a;
   r = (absy>absx ? 1.57079637f - r : r);
@@ -342,7 +343,8 @@ __global__ void ExtractSiftDescriptorsCONSTNew(cudaTextureObject_t texObj, SiftP
       float dy = tex2D<float>(texObj, xpos-sina, ypos+cosa) - 
 	tex2D<float>(texObj, xpos+sina, ypos-cosa);
       float grad = gauss[y]*gauss[tx] * __fsqrt_rn(dx*dx + dy*dy);
-      float angf = 4.0f/3.1415f*FastAtan2(dy, dx) + 4.0f;
+      float angf = 4.0f/3.14159265f*FastAtan2(dy, dx) + 4.0f;
+      angf = (angf>=8.0f ? angf - 8.0f : angf);   // atan2 = pi is angle 0, not 8
       
       int hori = (tx + 2)/4 - 1;      // Convert from (tx,y,angle) to bins      
       float horf = (tx - 1.5f)/4.0f - hori;
@@ -454,7 +456,8 @@ __global__ void ExtractSiftDescriptorsCONST(cudaTextureObject_t texObj, SiftPoin
       float dy = tex2D<float>(texObj, xpos-sina, ypos+cosa) - 
 	tex2D<float>(texObj, xpos+sina, ypos-cosa);
       float grad = gauss[y]*gauss[tx] * sqrtf(dx*dx + dy*dy);
-      float angf = 4.0f/3.1415f*atan2f(dy, dx) + 4.0f;
+      float angf = 4.0f/3.14159265f*atan2f(dy, dx) + 4.0f;
+      angf = (angf>=8.0f ? angf - 8.0f : angf);   // atan2 = pi is angle 0, not 8
       
       int hori = (tx + 2)/4 - 1;      // Convert from (tx,y,angle) to bins      
       float horf = (tx - 1.5f)/4.0f - hori;
@@ -1382,9 +1385,10 @@ __global__ void FindPointsMultiNew(float *d_Data0, SiftPoint *d_Sift, int width,
     int ptr = xpos + (ypos + (scale + 1)*height)*pitch;
     float val = d_Data0[ptr];
     float *data1 = &d_Data0[ptr];
+    // Negated Hessian (dxx = -d2/dx2, dxy = -d2/dxdy, ...): the offset is its inverse times the gradient
     float dxx = 2.0f*val - data1[-1] - data1[1];
     float dyy = 2.0f*val - data1[-pitch] - data1[pitch];
-    float dxy = 0.25f*(data1[+pitch+1] + data1[-pitch-1] - data1[-pitch+1] - data1[+pitch-1]);
+    float dxy = 0.25f*(data1[-pitch+1] + data1[+pitch-1] - data1[+pitch+1] - data1[-pitch-1]);
     float tra = dxx + dyy;
     float det = dxx*dyy - dxy*dxy;
     if (tra*tra<edgeLimit*det) {
@@ -1393,10 +1397,10 @@ __global__ void FindPointsMultiNew(float *d_Data0, SiftPoint *d_Sift, int width,
       float dy = 0.5f*(data1[pitch] - data1[-pitch]); 
       float *data0 = d_Data0 + ptr - height*pitch;
       float *data2 = d_Data0 + ptr + height*pitch;
-      float ds = 0.5f*(data0[0] - data2[0]); 
+      float ds = 0.5f*(data2[0] - data0[0]); 
       float dss = 2.0f*val - data2[0] - data0[0];
-      float dxs = 0.25f*(data2[1] + data0[-1] - data0[1] - data2[-1]);
-      float dys = 0.25f*(data2[pitch] + data0[-pitch] - data2[-pitch] - data0[pitch]);
+      float dxs = 0.25f*(data0[1] + data2[-1] - data2[1] - data0[-1]);
+      float dys = 0.25f*(data0[pitch] + data2[-pitch] - data2[pitch] - data0[-pitch]);
       float idxx = dyy*dss - dys*dys;
       float idxy = dys*dxs - dxy*dss;   
       float idxs = dxy*dys - dyy*dxs;
@@ -1524,9 +1528,10 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
     int ptr = xpos + (ypos + (scale+1)*height)*pitch;
     float val = d_Data0[ptr];
     float *data1 = &d_Data0[ptr];
+    // Negated Hessian (dxx = -d2/dx2, dxy = -d2/dxdy, ...): the offset is its inverse times the gradient
     float dxx = 2.0f*val - data1[-1] - data1[1];
     float dyy = 2.0f*val - data1[-pitch] - data1[pitch];
-    float dxy = 0.25f*(data1[+pitch+1] + data1[-pitch-1] - data1[-pitch+1] - data1[+pitch-1]);
+    float dxy = 0.25f*(data1[-pitch+1] + data1[+pitch-1] - data1[+pitch+1] - data1[-pitch-1]);
     float tra = dxx + dyy;
     float det = dxx*dyy - dxy*dxy;
     if (tra*tra<edgeLimit*det) {
@@ -1535,10 +1540,10 @@ __global__ void FindPointsMulti(float *d_Data0, SiftPoint *d_Sift, int width, in
       float dy = 0.5f*(data1[pitch] - data1[-pitch]); 
       float *data0 = d_Data0 + ptr - height*pitch;
       float *data2 = d_Data0 + ptr + height*pitch;
-      float ds = 0.5f*(data0[0] - data2[0]); 
+      float ds = 0.5f*(data2[0] - data0[0]); 
       float dss = 2.0f*val - data2[0] - data0[0];
-      float dxs = 0.25f*(data2[1] + data0[-1] - data0[1] - data2[-1]);
-      float dys = 0.25f*(data2[pitch] + data0[-pitch] - data2[-pitch] - data0[pitch]);
+      float dxs = 0.25f*(data0[1] + data2[-1] - data2[1] - data0[-1]);
+      float dys = 0.25f*(data0[pitch] + data2[-pitch] - data2[pitch] - data0[-pitch]);
       float idxx = dyy*dss - dys*dys;
       float idxy = dys*dxs - dxy*dss;   
       float idxs = dxy*dys - dyy*dxs;

@@ -10,6 +10,8 @@
 
 #include "cudaImage.h"
 #include "cudaSift.h"
+#include <vector>
+#include <cuda_runtime.h>
 
 int ImproveHomography(SiftData &data, float *homography, int numLoops, float minScore, float maxAmbiguity, float thresh);
 
@@ -181,6 +183,134 @@ void TestScale()
   FreeSiftData(siftData2);
 }
 
+// Regression test: TestHomographies also tested the padding of the
+// coordinate arrays (rounded up to a multiple of 16), so numMatches could exceed numPts.
+// The padding is never written: it is fresh memory (zeros) or, with the memory released
+// just before, 100.0f values. Both give (x,y)->(x,y) pairs, inliers of the identity.
+void TestHomographyPadding()
+{
+  std::cout << "\n--- Test: Homography inliers with numPts not a multiple of 16 ---" << std::endl;
+
+  const int numPts = 20, numPtsUp = 32;
+  float *prime = NULL;
+  std::vector<float> hundreds(4*numPtsUp, 100.0f);
+  cudaMalloc((void **)&prime, sizeof(float)*4*numPtsUp);   // same size as FindHomography's coordinates
+  cudaMemcpy(prime, hundreds.data(), sizeof(float)*4*numPtsUp, cudaMemcpyHostToDevice);
+  cudaFree(prime);
+
+  SiftData data;
+  InitSiftData(data, numPts, true, true);
+#ifdef MANAGEDMEM
+  SiftPoint *pts = data.m_data;
+#else
+  SiftPoint *pts = data.h_data;
+#endif
+  for (int i = 0; i < numPts; i++) {
+    SiftPoint &pt = pts[i];
+    pt.xpos = pt.match_xpos = 50.0f + 37.0f*(i%5) + 3.0f*i;   // perfect matches under the identity
+    pt.ypos = pt.match_ypos = 40.0f + 29.0f*(i/5) + 2.0f*(i%3);
+    pt.score = 1.0f;
+    pt.ambiguity = 0.0f;
+  }
+  data.numPts = numPts;
+#ifndef MANAGEDMEM
+  cudaMemcpy(data.d_data, data.h_data, sizeof(SiftPoint)*numPts, cudaMemcpyHostToDevice);
+#endif
+
+  srand(1);
+  float homography[9];
+  int numMatches = 0;
+  FindHomography(data, homography, &numMatches, 1024, 0.0f, 0.8f, 3.0f);
+  std::cout << "    " << numPts << " points, " << numMatches << " matches" << std::endl;
+  CHECK(numMatches == numPts, "numMatches == numPts for perfect matches");
+
+  FreeSiftData(data);
+}
+
+// Regression test: TestHomographies counted the inliers among all the points, not only
+// among those FindHomography samples from (score > minScore, ambiguity < maxAmbiguity).
+// 20 valid matches under the identity, 10 valid matches under a translation, and 40
+// ambiguous matches under the same translation: the translation won with 50 inliers.
+void TestHomographyValidOnly()
+{
+  std::cout << "\n--- Test: Homography inliers among the valid matches only ---" << std::endl;
+
+  const int numIdentity = 20, numShifted = 10, numAmbiguous = 40;
+  const int numPts = numIdentity + numShifted + numAmbiguous;
+  const float dx = 30.0f, dy = 20.0f;
+  SiftData data;
+  InitSiftData(data, numPts, true, true);
+#ifdef MANAGEDMEM
+  SiftPoint *pts = data.m_data;
+#else
+  SiftPoint *pts = data.h_data;
+#endif
+  for (int i = 0; i < numPts; i++) {
+    SiftPoint &pt = pts[i];
+    pt.xpos = 50.0f + 37.0f*(i%7) + 3.0f*(i/7);
+    pt.ypos = 40.0f + 29.0f*(i/7) + 2.0f*(i%3);
+    bool shifted = (i >= numIdentity);
+    pt.match_xpos = pt.xpos + (shifted ? dx : 0.0f);
+    pt.match_ypos = pt.ypos + (shifted ? dy : 0.0f);
+    pt.score = 1.0f;
+    pt.ambiguity = (i < numIdentity + numShifted ? 0.0f : 0.95f);
+  }
+  data.numPts = numPts;
+#ifndef MANAGEDMEM
+  cudaMemcpy(data.d_data, data.h_data, sizeof(SiftPoint)*numPts, cudaMemcpyHostToDevice);
+#endif
+
+  srand(1);
+  float homography[9];
+  int numMatches = 0;
+  FindHomography(data, homography, &numMatches, 1024, 0.0f, 0.8f, 3.0f);
+  std::cout << "    " << numMatches << " matches, translation " << homography[2] << ", " << homography[5] << std::endl;
+  CHECK(numMatches == numIdentity, "numMatches == number of valid identity matches");
+  CHECK(std::fabs(homography[2]) < 1.0f && std::fabs(homography[5]) < 1.0f, "homography is the identity");
+
+  FreeSiftData(data);
+}
+
+// Regression test: FindHomography kept hypotheses from samples whose triangles change
+// orientation between the images, which no camera viewing a plane produces. 20 matches
+// under the identity and 30 under a mirror: the mirror won with 30 inliers.
+void TestHomographyOrientation()
+{
+  std::cout << "\n--- Test: Homography samples with consistent orientation ---" << std::endl;
+
+  const int numIdentity = 20, numMirrored = 30, numPts = numIdentity + numMirrored;
+  SiftData data;
+  InitSiftData(data, numPts, true, true);
+#ifdef MANAGEDMEM
+  SiftPoint *pts = data.m_data;
+#else
+  SiftPoint *pts = data.h_data;
+#endif
+  for (int i = 0; i < numPts; i++) {
+    SiftPoint &pt = pts[i];
+    pt.xpos = 50.0f + 37.0f*(i%7) + 3.0f*(i/7);
+    pt.ypos = 40.0f + 29.0f*(i/7) + 2.0f*(i%3);
+    pt.match_xpos = (i < numIdentity ? pt.xpos : 400.0f - pt.xpos);
+    pt.match_ypos = pt.ypos;
+    pt.score = 1.0f;
+    pt.ambiguity = 0.0f;
+  }
+  data.numPts = numPts;
+#ifndef MANAGEDMEM
+  cudaMemcpy(data.d_data, data.h_data, sizeof(SiftPoint)*numPts, cudaMemcpyHostToDevice);
+#endif
+
+  srand(1);
+  float homography[9];
+  int numMatches = 0;
+  FindHomography(data, homography, &numMatches, 1024, 0.0f, 0.8f, 3.0f);
+  std::cout << "    " << numMatches << " matches, H[0] " << homography[0] << std::endl;
+  CHECK(numMatches == numIdentity, "numMatches == number of identity matches");
+  CHECK(std::fabs(homography[0] - 1.0f) < 0.01f, "homography is the identity, not the mirror");
+
+  FreeSiftData(data);
+}
+
 void TestPGMImages()
 {
   std::cout << "\n--- Test: PGM Image Pair ---" << std::endl;
@@ -243,6 +373,9 @@ int main(int argc, char **argv)
   TestTranslation();
   TestRotation();
   TestScale();
+  TestHomographyPadding();
+  TestHomographyValidOnly();
+  TestHomographyOrientation();
   TestPGMImages();
 
   std::cout << "\n=============================================" << std::endl;
