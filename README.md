@@ -379,6 +379,34 @@ This branch includes the following optimizations for the Ada Lovelace architectu
 6. **C++17 / CUDA 17** -- Modern language standard support
 7. **Static Library** -- Core SIFT compiled as static library for faster linking
 
+## HPatches Evaluation
+
+`eval_hpatches` measures matching and homography accuracy on image sequences with ground-truth homographies:
+
+- [HPatches](https://github.com/hpatches/hpatches-dataset): 116 sequences (57 with illumination changes, 59 with viewpoint changes), each with a reference image, 5 other images and their homographies, so 580 image pairs. `scripts/get_datasets.sh <dir>` downloads and unpacks it (1.3 GB).
+- Synthetic pairs, made from any images by `--make-synthetic`, with the transformations of the synthetic tests of Lowe's SIFT paper (IJCV 2004, sections 3.2 and 6.3): 40 pairs per image, each with a random rotation, a scaling by 0.2 to 0.9, a planar tilt of up to 50°, a brightness and contrast change and 1% noise. The pseudo-random parameters are the same on every platform (each pair's are in its `params` file), and both images are rendered with 4x supersampling so that they have the same resampling blur.
+
+Until upstream PR #96 is merged, `MatchSiftData` crashes on images with fewer than 32 points: add `--skip i_fog` on HPatches.
+
+```bash
+./eval_hpatches hpatches-sequences-release              # CudaSift
+./eval_hpatches hpatches-sequences-release --opencv     # OpenCV SIFT, same protocol
+./eval_hpatches hpatches-sequences-release --vlfeat     # VLFeat SIFT (builds with VLFeat)
+./eval_hpatches hpatches-sequences-release --vlfeat-colmap   # VLFeat with COLMAP's settings
+./eval_hpatches hpatches-sequences-release --csv out.csv   # per-pair results
+./eval_hpatches hpatches-sequences-release --opencv-homography            # CudaSift matches, OpenCV's findHomography
+./eval_hpatches hpatches-sequences-release --opencv --cudasift-homography # OpenCV matches, CudaSift's estimator
+./eval_hpatches hpatches-sequences-release --oracle 3                     # upper bound for any estimator
+./eval_hpatches synthetic --make-synthetic data/img1.png,data/img2.png    # writes 80 pairs to synthetic/
+./eval_hpatches synthetic --thresh 2.5                                    # with another ExtractSift threshold
+```
+
+For each pair, it reports the matches that pass Lowe's ratio test (0.8), the share of them within 1, 3, 5 and 10 px of the ground truth (MMA), whether the homography from `FindHomography` and `ImproveHomography` moves the image corners by less than 1, 3 and 5 px, the repeatability of the keypoints (found again in the other image at the right position, within 2.5 px, and scale, within a factor 1.19: the detector alone), the chance level of the repeatability (the same pairing with the projected keypoints moved by max(5 px, 3σ)) and the chance-corrected repeatability, the repeatability of the 500, 1000 and 2000 strongest keypoints, the matching score (the matches within 3 px over the same number of keypoints: detector and descriptors), the position and scale errors of the correct matches, and the time of extraction, matching and homography estimation. The results are summarized over all pairs, and over the illumination and the viewpoint sequences of HPatches (`--per-sequence`: also per sequence). The combined commands use the features of one with the homography estimator of the other, to separate the effects of the features and of the estimator. `--oracle 3` fits the homography to the matches within 3 px of the ground truth (least squares and Levenberg-Marquardt): an upper bound for any estimator on these matches. More features give better homographies, so compare configurations at the same number of features (`--init-blur` and `--thresh` set those `ExtractSift` parameters).
+
+`--opencv` needs OpenCV 4.4 or later (`cv::SIFT`), and uses OpenCV's precise upscale (`enable_precise_upscale`), which needs OpenCV 4.8 or later: older versions shift OpenCV's keypoints by +0.25 px, and `--opencv-legacy-upscale` accepts that.
+
+`--vlfeat` and `--vlfeat-colmap` need VLFeat's C library: configure with `-DVLFEAT_DIR=<prefix with include/vl and lib>` (conda-forge has a `vlfeat` package). `--vlfeat` uses VLFeat's defaults, on the image divided by 255 (as COLMAP gives it to VLFeat). `--vlfeat-colmap` uses COLMAP's settings and post-processing, without depending on COLMAP: first octave −1, 4 octaves, peak threshold 0.02/3, at most 2 orientations, whole DoG levels from the coarsest up to 8192 features, and L1-root descriptors rounded to 8 bits. In builds with `ExtractSiftCompat` (upstream PR #105), `--compat opencv|vlfeat|colmap` evaluates CudaSift with it instead of `ExtractSift`, and `--first-octave`, `--extend-first-octave` (with `--extend-scales n`), `--contrast-threshold` and `--double` change its parameters. `--jobs n` evaluates the CPU references on n threads (the times per pair are then not comparable), and `--gpu-matching` matches their features with `MatchSiftData`, which finds the same matches as OpenCV's brute-force matcher up to ties, much faster. `--profile` reports the time of each phase, and `--repeat-curve` the repeatability against the shift of the projected keypoints.
+
 ## Algorithm Parameters
 
 | Parameter | Default | Description |

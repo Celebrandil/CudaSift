@@ -82,6 +82,7 @@ endif()
 # ---- Tests & Benchmarks ----
 if(BUILD_TESTS)
   set_source_files_properties(
+    tests/eval_hpatches.cpp
     tests/benchmark.cpp
     tests/test_extract.cpp
     tests/test_match.cpp
@@ -90,6 +91,19 @@ if(BUILD_TESTS)
   )
   add_executable(benchmark tests/benchmark.cpp)
   target_link_libraries(benchmark PRIVATE cudasift_lib)
+
+  # Matching and homography accuracy on the HPatches sequences, see the README
+  add_executable(eval_hpatches tests/eval_hpatches.cpp)
+  target_link_libraries(eval_hpatches PRIVATE cudasift_lib)
+  # Optional: VLFeat's SIFT as a reference (--vlfeat), with -DVLFEAT_DIR=<prefix with include/vl and lib>
+  find_path(VLFEAT_INCLUDE_DIR vl/sift.h HINTS ${VLFEAT_DIR}/include ${VLFEAT_DIR})
+  find_library(VLFEAT_LIBRARY NAMES vl HINTS ${VLFEAT_DIR}/lib ${VLFEAT_DIR})
+  if(VLFEAT_INCLUDE_DIR AND VLFEAT_LIBRARY)
+    message(STATUS "eval_hpatches: VLFeat found (${VLFEAT_LIBRARY})")
+    target_compile_definitions(eval_hpatches PRIVATE HAVE_VLFEAT)
+    target_include_directories(eval_hpatches PRIVATE ${VLFEAT_INCLUDE_DIR})
+    target_link_libraries(eval_hpatches PRIVATE ${VLFEAT_LIBRARY})
+  endif()
 
   add_executable(test_extract tests/test_extract.cpp)
   target_link_libraries(test_extract PRIVATE cudasift_lib)
