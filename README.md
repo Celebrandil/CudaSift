@@ -548,7 +548,7 @@ On a Tesla T4, for `data/img1.png` (1920x1080), including the copy of the featur
 | VLFeat 0.9.21 on the CPU, 1 thread | 1.1 s | 4750 |
 | COLMAP's settings on VLFeat 0.9.21, CPU, 1 thread | 3.2 s | 8385 |
 
-`ExtractSiftCompat` is slower than `ExtractSift` mostly because OpenCV and COLMAP work on the doubled image by default; at the original resolution, it takes 1.8 to 4 times as long (the libraries' exact steps, and more features). `tests/compare_sift` checks the agreement keypoint by keypoint, with OpenCV (4.8 or later), or with VLFeat (`--vlfeat`, `--colmap`) in builds with VLFeat (`-DVLFEAT_DIR=<prefix with include/vl and lib>`):
+`ExtractSiftCompat` is slower than `ExtractSift` mostly because OpenCV and COLMAP work on the doubled image by default; at the original resolution, it takes 1.8 to 4 times as long (the libraries' exact steps, and more features). It runs on Metal too (`-DUSE_METAL=ON`), with the same results up to rounding and without `doublePrecision`; see [metal/README.md](metal/README.md#extractsiftcompat). `tests/compare_sift` checks the agreement keypoint by keypoint, with OpenCV (4.8 or later), or with VLFeat (`--vlfeat`, `--colmap`) in builds with VLFeat (`-DVLFEAT_DIR=<prefix with include/vl and lib>`):
 
 ```bash
 build/compare_sift data/img1.png data/img2.png

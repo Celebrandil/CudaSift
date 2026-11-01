@@ -7,9 +7,12 @@ This directory holds the Apple Metal implementation of CudaSift, built with `-DU
 | `cudaSift.metal` | Kernels (Metal Shading Language), compiled at run time |
 | `cudaSiftMetal.mm` | Host code (Objective-C++): the API of `cudaSift.h` and `cudaImage.h` |
 | `cudaSiftMetalShared.h` | Kernel parameter structs and kernel geometry constants, shared by host and kernels (`static_assert`s in the kernels check the geometry of `LaplaceFindPoints` and the size of the `ImproveHomographyGPU` state) |
-| `EmbedMetalSource.cmake` | Embeds `cudaSiftD.h`, `cudaSiftMetalShared.h`, `cudaSiftRandom.h` and `cudaSift.metal`, in this order, in the library |
+| `EmbedMetalSource.cmake` | Embeds `cudaSiftD.h`, `cudaSiftMetalShared.h`, `cudaSiftRandom.h` and `cudaSift.metal`, in this order, in the library, and `cudaSiftCompatShared.h` and `cudaSiftCompat.metal` for `ExtractSiftCompat` |
 | `cudaSiftMetal.h` | Metal-specific API: the Metal objects behind CudaSift's data, for other Metal code, see below |
 | `compat/cuda_runtime.h` | CUDA runtime subset used by the tests and demos |
+| `cudaSiftCompat.metal` | Kernels of `ExtractSiftCompat` (`cudaSiftCompat.h`), compiled at run time in their own library |
+| `cudaSiftCompatMetal.mm` | Host code of `ExtractSiftCompat`, included by `cudaSiftMetal.mm` (the rest of its host code, shared with CUDA, is in `cudaSiftCompatHost.h`) |
+| `cudaSiftCompatShared.h` | Its constants, kernel parameter structs and kernel geometry, shared by its host code and kernels |
 
 ## Design
 
@@ -108,6 +111,25 @@ How much the results change (`data/img1.png`, `data/img2.png`, 10000 hypotheses,
 - `ImproveHomographyGPU` and `ImproveHomography` give the same 1009 inliers. The homographies differ by 3.8e-6 px on average over the inliers (maximum 0.00027 px), and `match_error` by at most 0.00022 px.
 - In one batch: 126 matches and 1009 inliers, identical to the separate calls.
 - With the same seed and the same matches, the result is identical between runs.
+
+## ExtractSiftCompat
+
+`ExtractSiftCompat` (`cudaSiftCompat.h`: OpenCV's, VLFeat's and COLMAP's SIFT) runs on Metal too, with the same results as with CUDA up to floating-point rounding. Its kernels (`cudaSiftCompat.metal`) port those of `cudaSiftCompat.cu`: one kernel per stage for the three settings, templated on the mode (instantiated under `[[host_name]]`), with each library's version of a step as an overload on its keypoint type (MSL has no `if constexpr`). The host code that doesn't depend on the backend (validation, pyramids, keypoint selection) is shared with CUDA in `cudaSiftCompatHost.h`.
+
+- **Arithmetic.** The kernels are compiled in their own library, without fast math. There, divisions are correctly rounded (except where the CUDA code uses a fast division or a reciprocal, which these kernels do too), and the products and sums that the CUDA code rounds separately with `__fmul_rn`, `__fadd_rn` and `__fsub_rn` are written with `MulRN`, `AddRN` and `SubRN`, which `#pragma METAL fp contract(off)` keeps from being fused into multiply-adds. `sqrt` isn't correctly rounded without fast math either, so `precise::sqrt` replaces `__fsqrt_rn`. Apple GPUs have no double precision: `doublePrecision` stops the program with a message (builds define `CUDASIFT_COMPAT_NO_DOUBLE`), and the few values that the CUDA float path computes in double are floats.
+- **Histograms.** The CUDA code sums the descriptor histograms per warp, adding the lanes with the same bin together (`__match_any_sync`). Emulated with SIMD group votes, that loop over distinct bins made the descriptors 3 to 4 times slower. Here groups of 8 lanes share a histogram and add to it one after the other, in lane order, then the histograms are summed in a fixed order: the results still don't vary between runs, with a different summation order than CUDA's.
+- **Blurs.** Two passes on tiles in threadgroup memory, templated on the radius (1 to 16, and one generic kernel for larger radii) so that the loops unroll. The fused blur of the CUDA code needs too much threadgroup memory per threadgroup on Apple GPUs, and is slower here.
+- **Calls.** The extrema and the orientations run in one command buffer (the orientations are dispatched from the number of candidates on the GPU), then the keypoints are selected on the host and the descriptors computed in a second one. Calls hold the backend's call lock, so they run one at a time, and can't be part of a batch.
+
+On HPatches (the first and fourth images of its 116 sequences, 232 images; `tests/compare_sift`), with OpenCV 4.14 and VLFeat 0.9.21 built without fused multiply-adds as its x86 builds are, 0 of OpenCV's 1,087,351 keypoints are missing (1 extra), 1 of VLFeat's 789,016 and 2 of COLMAP's 1,555,638, with median descriptor distances of 4e-7 or less, as with CUDA. With VLFeat built by clang on Apple silicon, which fuses multiply-adds, VLFeat's own keypoints differ slightly (4753 instead of 4750 on `data/img1.png`). On the evaluation of upstream PR [#103](https://github.com/Celebrandil/CudaSift/pull/103), the numbers of features, repeatabilities and matching scores are those of CUDA in every setting.
+
+Speed, `data/img1.png` (1920x1080), M5 Pro against the Tesla T4 of the CUDA numbers, including the copy of the features to the host:
+
+| Settings | Doubled image | Original resolution | Original resolution + extension |
+|---|---|---|---|
+| OpenCV | 11.1 ms (T4: 10.8) | 2.7 ms (2.7) | 4.9 ms (5.5) |
+| VLFeat | 26.6 ms (35.2) | 4.7 ms (5.9) | 11.4 ms (17.3) |
+| COLMAP | 10.1 ms (13.8) | 2.6 ms (3.2) | 4.8 ms (6.9) |
 
 ## Kernels
 

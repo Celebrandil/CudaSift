@@ -11,6 +11,7 @@
 #include <atomic>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <cuda_runtime.h>
 #include "cudaImage.h"
 #include "cudaSift.h"
 #include "cudaSiftCompat.h"
@@ -22,7 +23,9 @@ static SiftCompatParams Config(int c)
     p.firstOctave = 0;
     p.extendFirstOctave = true;
   }
+#ifndef CUDASIFT_COMPAT_NO_DOUBLE   // the Metal backend has no doublePrecision
   p.doublePrecision = (c==4);
+#endif
   return p;
 }
 

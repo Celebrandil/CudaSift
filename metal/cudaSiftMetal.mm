@@ -238,11 +238,13 @@ public:
     [enc memoryBarrierWithResources:&r count:1];
   }
   void Pipeline(const char *name, bool precise = false) {
+    Pipeline(name, precise ? PreciseLibrary() : GetContext().library);
+  }
+  void Pipeline(const char *name, id<MTLLibrary> library) {   // cached by name: a kernel is used with one library
     Context &ctx = GetContext();
     id<MTLComputePipelineState> pso = ctx.pipelines[name];
     if (pso==nil) {
       NSError *error = nil;
-      id<MTLLibrary> library = (precise ? PreciseLibrary() : ctx.library);
       id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:name]];
       if (function==nil)
         Fail(name);
@@ -1493,6 +1495,13 @@ cudaError_t cudaSetDevice(int device)
   return device==0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
+cudaError_t cudaDeviceSynchronize()   // calls complete before they return; this completes a submitted batch
+{
+  std::lock_guard<std::mutex> callLock(GetContext().callMutex);
+  CompleteBatch();
+  return cudaSuccess;
+}
+
 cudaError_t cudaGetDeviceProperties(cudaDeviceProp *prop, int)
 {
   @autoreleasepool {
@@ -1505,3 +1514,7 @@ cudaError_t cudaGetDeviceProperties(cudaDeviceProp *prop, int)
     return cudaSuccess;
   }
 }
+
+// ExtractSiftCompat (cudaSiftCompat.h): its host code, which uses the context and the command
+// encoding above
+#include "cudaSiftCompatMetal.mm"

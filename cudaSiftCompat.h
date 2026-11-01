@@ -36,7 +36,8 @@ struct SiftCompatParams {
   // with slow double precision; the features are essentially the same (on HPatches, 0 of
   // VLFeat's 789016 keypoints and 2 of COLMAP's 1555638 missing in float, 0 in double). With
   // OpenCV, which computes in float, double changes the refinement and the orientation
-  // histograms (a deviation from OpenCV).
+  // histograms (a deviation from OpenCV). Not available with the Metal backend (Apple GPUs have
+  // no double precision), whose builds define CUDASIFT_COMPAT_NO_DOUBLE.
   bool doublePrecision = false;
   // OpenCV only
   int nfeatures = 0;                // keep the nfeatures strongest keypoints, ties included (0: all)
@@ -102,7 +103,7 @@ struct SiftCompatParams {
 // or 0, extendFirstOctave without firstOctave 0, numOctaves 0 or below -1, or a sigma needing a
 // Gaussian kernel of more than 129 taps) stop the program with a message. Thread-safe: each
 // device has its own temporary memory, kept between calls, and calls on the same device run one
-// at a time.
+// at a time. With the Metal backend, not in a batch (cudaSiftBatch.h).
 void ExtractSiftCompat(SiftData &siftData, CudaImage &img, const SiftCompatParams &params = SiftCompatParams());
 
 // ExtractSiftCompat keeps its temporary memory between calls; this releases it, on the current

@@ -3,10 +3,10 @@
 //********************************************************//
 
 // The host code of ExtractSiftCompat that doesn't depend on the backend, included by
-// cudaSiftCompat.cu, apart from it so that another backend can share it: the validation of the
+// cudaSiftCompat.cu (CUDA) and metal/cudaSiftCompatMetal.mm (Metal): the validation of the
 // parameters, the pyramids of OpenCV's and VLFeat's SIFT and the selection of the keypoints.
-// The pyramid builders are templated on the backend, which places the levels (pointers here,
-// offsets in a backend with buffers) and launches the input, blur and downsampling kernels,
+// The pyramid builders are templated on the backend, which places the levels (pointers with
+// CUDA, offsets in a buffer with Metal) and launches the input, blur and downsampling kernels,
 // and on its pyramid and parameter types. The includer defines COMPAT_MAX_OCTAVES,
 // COMPAT_MAX_LAYERS, COMPAT_MAX_LEVELS, COMPAT_MAX_RADIUS and SIFT_INIT_SIGMA (a float).
 

@@ -48,5 +48,6 @@ cudaError_t cudaGetLastError();
 cudaError_t cudaGetDeviceCount(int *count);
 cudaError_t cudaGetDevice(int *device);
 cudaError_t cudaSetDevice(int device);
+cudaError_t cudaDeviceSynchronize();   // calls complete before they return; this completes a submitted batch
 
 #endif

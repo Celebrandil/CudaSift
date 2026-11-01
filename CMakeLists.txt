@@ -198,33 +198,52 @@ set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
 set(CPACK_GENERATOR "ZIP")
 include(CPack)
 
-# ---- OpenCV- and VLFeat-compatible SIFT (ExtractSiftCompat, CUDA only) ----
-if(NOT USE_METAL)
+# ---- OpenCV- and VLFeat-compatible SIFT (ExtractSiftCompat) ----
+if(USE_METAL)
+  # The kernels are compiled at run time from metal/cudaSiftCompat.metal, embedded in the library
+  # after metal/cudaSiftCompatShared.h; cudaSiftMetal.mm includes the host code,
+  # metal/cudaSiftCompatMetal.mm
+  set(COMPAT_METAL_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/metal/cudaSiftCompatShared.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/metal/cudaSiftCompat.metal
+  )
+  string(REPLACE ";" "|" COMPAT_METAL_SOURCES_ARG "${COMPAT_METAL_SOURCES}")
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/cudaSiftCompatMetalSource.h
+    COMMAND ${CMAKE_COMMAND} "-DIN=${COMPAT_METAL_SOURCES_ARG}" -DOUT=${CMAKE_CURRENT_BINARY_DIR}/cudaSiftCompatMetalSource.h
+            -DVAR=cudaSiftCompatMetalSource -P ${CMAKE_CURRENT_SOURCE_DIR}/metal/EmbedMetalSource.cmake
+    DEPENDS ${COMPAT_METAL_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/metal/EmbedMetalSource.cmake
+    VERBATIM
+  )
+  target_sources(cudasift_lib PRIVATE cudaSiftCompat.h cudaSiftCompatHost.h metal/cudaSiftCompatShared.h
+                 ${CMAKE_CURRENT_BINARY_DIR}/cudaSiftCompatMetalSource.h)
+  target_compile_definitions(cudasift_lib PUBLIC CUDASIFT_COMPAT_NO_DOUBLE)   # no doublePrecision
+else()
   target_sources(cudasift_lib PRIVATE cudaSiftCompat.cu cudaSiftCompat.h cudaSiftCompatHost.h)
-  target_compile_definitions(cudasift_lib PUBLIC CUDASIFT_HAS_COMPAT)   # for users of the library
-  find_package(Threads REQUIRED)   # std::mutex
-  target_link_libraries(cudasift_lib PUBLIC Threads::Threads)
-  install(FILES cudaSiftCompat.h DESTINATION include)
-  if(BUILD_TESTS)
-    # Calls from several threads at once
-    set_source_files_properties(tests/test_compat_threads.cpp PROPERTIES LANGUAGE CUDA)
-    add_executable(test_compat_threads tests/test_compat_threads.cpp)
-    target_link_libraries(test_compat_threads PRIVATE cudasift_lib)
-    # Keypoint-by-keypoint comparison with OpenCV's and VLFeat's SIFT (cv::SIFT: OpenCV 4.4 or later)
-    if(OpenCV_VERSION VERSION_LESS 4.4)
-      message(STATUS "compare_sift not built: it needs cv::SIFT (OpenCV 4.4 or later)")
-    else()
-      set_source_files_properties(tests/compare_sift.cpp PROPERTIES LANGUAGE CUDA)
-      add_executable(compare_sift tests/compare_sift.cpp)
-      target_link_libraries(compare_sift PRIVATE cudasift_lib)
-      # Optional: VLFeat as a reference (--vlfeat, --colmap), with -DVLFEAT_DIR=<prefix with include/vl and lib>
-      find_path(VLFEAT_INCLUDE_DIR vl/sift.h HINTS ${VLFEAT_DIR}/include ${VLFEAT_DIR})
-      find_library(VLFEAT_LIBRARY NAMES vl HINTS ${VLFEAT_DIR}/lib ${VLFEAT_DIR})
-      if(VLFEAT_INCLUDE_DIR AND VLFEAT_LIBRARY)
-        target_compile_definitions(compare_sift PRIVATE HAVE_VLFEAT)
-        target_include_directories(compare_sift PRIVATE ${VLFEAT_INCLUDE_DIR})
-        target_link_libraries(compare_sift PRIVATE ${VLFEAT_LIBRARY})
-      endif()
+endif()
+target_compile_definitions(cudasift_lib PUBLIC CUDASIFT_HAS_COMPAT)   # for users of the library
+find_package(Threads REQUIRED)   # std::mutex
+target_link_libraries(cudasift_lib PUBLIC Threads::Threads)
+install(FILES cudaSiftCompat.h DESTINATION include)
+if(BUILD_TESTS)
+  # Calls from several threads at once
+  set_source_files_properties(tests/test_compat_threads.cpp PROPERTIES LANGUAGE ${CUDASIFT_APP_LANGUAGE})
+  add_executable(test_compat_threads tests/test_compat_threads.cpp)
+  target_link_libraries(test_compat_threads PRIVATE cudasift_lib)
+  # Keypoint-by-keypoint comparison with OpenCV's and VLFeat's SIFT (cv::SIFT: OpenCV 4.4 or later)
+  if(OpenCV_VERSION VERSION_LESS 4.4)
+    message(STATUS "compare_sift not built: it needs cv::SIFT (OpenCV 4.4 or later)")
+  else()
+    set_source_files_properties(tests/compare_sift.cpp PROPERTIES LANGUAGE ${CUDASIFT_APP_LANGUAGE})
+    add_executable(compare_sift tests/compare_sift.cpp)
+    target_link_libraries(compare_sift PRIVATE cudasift_lib)
+    # Optional: VLFeat as a reference (--vlfeat, --colmap), with -DVLFEAT_DIR=<prefix with include/vl and lib>
+    find_path(VLFEAT_INCLUDE_DIR vl/sift.h HINTS ${VLFEAT_DIR}/include ${VLFEAT_DIR})
+    find_library(VLFEAT_LIBRARY NAMES vl HINTS ${VLFEAT_DIR}/lib ${VLFEAT_DIR})
+    if(VLFEAT_INCLUDE_DIR AND VLFEAT_LIBRARY)
+      target_compile_definitions(compare_sift PRIVATE HAVE_VLFEAT)
+      target_include_directories(compare_sift PRIVATE ${VLFEAT_INCLUDE_DIR})
+      target_link_libraries(compare_sift PRIVATE ${VLFEAT_LIBRARY})
     endif()
   endif()
 endif()
