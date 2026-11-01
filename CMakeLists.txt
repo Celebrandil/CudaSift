@@ -48,7 +48,9 @@ add_library(cudasift_lib STATIC
   cudaSiftH.h
   cudaSiftD.h
   cudaSift.h
+  cudaSiftBatch.h
   cudautils.h
+  cudaSiftRandom.h
   matching.cu
   geomFuncs.cpp
 )
@@ -90,6 +92,8 @@ if(BUILD_TESTS)
     tests/test_extract.cpp
     tests/test_match.cpp
     tests/test_homography.cpp
+    tests/test_homography_gpu.cpp
+    tests/test_batch.cpp
     PROPERTIES LANGUAGE CUDA
   )
   add_executable(benchmark tests/benchmark.cpp)
@@ -103,6 +107,13 @@ if(BUILD_TESTS)
 
   add_executable(test_homography tests/test_homography.cpp)
   target_link_libraries(test_homography PRIVATE cudasift_lib)
+
+  add_executable(test_homography_gpu tests/test_homography_gpu.cpp)
+  target_link_libraries(test_homography_gpu PRIVATE cudasift_lib)
+
+  add_executable(test_batch tests/test_batch.cpp)
+  find_package(Threads REQUIRED)   # std::thread
+  target_link_libraries(test_batch PRIVATE cudasift_lib Threads::Threads)
 endif()
 
 # ---- Install ----
@@ -110,7 +121,7 @@ install(TARGETS cudasift cudasift_lib
   RUNTIME DESTINATION bin
   ARCHIVE DESTINATION lib
 )
-install(FILES cudaSift.h cudaImage.h cudautils.h DESTINATION include)
+install(FILES cudaSift.h cudaImage.h cudaSiftBatch.h cudautils.h DESTINATION include)
 install(DIRECTORY data/ DESTINATION share/cudasift/data)
 
 # ---- CPack ----

@@ -1,5 +1,99 @@
+#include <cstdlib>
+#include <map>
+#include <mutex>
+#include <vector>
 #include "cudaSift.h"
 #include "cudautils.h"
+#include "cudaSiftH.h"
+#include "cudaSiftBatch.h"
+#include "cudaSiftRandom.h"
+
+// Device memory kept between the calls of MatchSiftData, FindHomographyGPU and
+// ImproveHomographyGPU, per device, and grown when needed. The calls hold the lock of
+// their device (ScratchLock) until they have completed, so that they can be made from
+// several host threads.
+//
+// In a batch (cudaSiftBatch.h), the point counts are on the GPU, not on the host: the calls
+// size their grids and scratch memory for the capacities (SiftData::maxPts), and their
+// kernels take pointers to the counts on the GPU (d_numPts...), which they read instead of
+// numPts when they are set. Outside batches, these pointers are NULL.
+enum { SCRATCH_COORD, SCRATCH_VALID, SCRATCH_RANDPTS, SCRATCH_HOMO, SCRATCH_RESULT,   // FindHomographyGPU
+       SCRATCH_IMPROVE_RESULT, SCRATCH_IMPROVE_STATE,                               // ImproveHomographyGPU
+       SCRATCH_BEST,                                                                // MatchSiftData
+       SCRATCH_BUFFERS };
+#define MAX_DEVICES 64
+struct DeviceScratch {
+  std::mutex lock;
+  void *ptr[SCRATCH_BUFFERS];
+  size_t size[SCRATCH_BUFFERS];
+  int maxBlocks;   // resident FindMaxCorr11 blocks, 0 until known
+  // Batches: each FindHomographyGPU and ImproveHomographyGPU call of a batch writes its
+  // result (a HomographyResult) to a slot of its own, read when the batch completes.
+  // homographies maps each homography array to the slot of the last call of the batch that
+  // computed it, so that a later ImproveHomographyGPU call on it starts from that result.
+  std::vector<void *> results;
+  size_t usedResults;
+  unsigned int batchId;
+  std::map<const float *, void *> homographies;
+};
+static DeviceScratch scratch[MAX_DEVICES];
+
+static DeviceScratch &DeviceScratchOf(int device)
+{
+  if (device>=MAX_DEVICES) {
+    fprintf(stderr, "CudaSift: device %d not supported (at most %d devices)\n", device, MAX_DEVICES);
+    exit(EXIT_FAILURE);
+  }
+  return scratch[device];
+}
+
+static std::unique_lock<std::mutex> ScratchLock()
+{
+  int device;
+  safeCall(cudaGetDevice(&device));
+  return std::unique_lock<std::mutex>(DeviceScratchOf(device).lock);
+}
+
+// Frees the scratch memory at exit (registered by the first allocation, so it runs before
+// the CUDA runtime's own exit handler). Errors are ignored, e.g. after cudaDeviceReset().
+static void FreeScratch()
+{
+  int device;
+  if (cudaGetDevice(&device)!=cudaSuccess)
+    return;
+  for (int d=0;d<MAX_DEVICES;d++) {
+    for (int i=0;i<SCRATCH_BUFFERS;i++)
+      if (scratch[d].ptr[i]!=NULL && cudaSetDevice(d)==cudaSuccess)
+        cudaFree(scratch[d].ptr[i]);
+    for (void *r : scratch[d].results)
+      if (cudaSetDevice(d)==cudaSuccess)
+        cudaFree(r);
+  }
+  cudaSetDevice(device);
+  cudaGetLastError();
+}
+
+// Registers FreeScratch, at the first allocation
+static void FreeScratchAtExit()
+{
+  static std::once_flag atExit;
+  std::call_once(atExit, [] { std::atexit(FreeScratch); });
+}
+
+static void *Scratch(int index, size_t size)   // with the ScratchLock of the device held
+{
+  FreeScratchAtExit();
+  int device;
+  safeCall(cudaGetDevice(&device));
+  DeviceScratch &s = DeviceScratchOf(device);
+  if (size>s.size[index]) {
+    if (s.ptr[index]!=NULL)
+      safeCall(cudaFree(s.ptr[index]));   // waits for the device, also for the work of a batch
+    safeCall(cudaMalloc(&s.ptr[index], size));
+    s.size[index] = size;
+  }
+  return s.ptr[index];
+}
 
 //================= Device matching functions =====================//
 
@@ -286,8 +380,16 @@ __global__ void FindMaxCorr4(SiftPoint *sift1, SiftPoint *sift2, int numPts1, in
 }
 
 
-__global__ void CleanMatches(SiftPoint *sift1, int numPts1)
+// d_numPts1, d_numPts2: the point counts on the GPU in a batch, else NULL (see the top of the file)
+__global__ void CleanMatches(SiftPoint *sift1, int numPts1, int numPts2, const int *d_numPts1, const int *d_numPts2)
 {
+  if (d_numPts1) {
+    numPts1 = *d_numPts1;
+    numPts2 = *d_numPts2;
+  }
+  // Nothing to match: outside batches, MatchSiftData returns before launching
+  if (!numPts1 || !numPts2)
+    return;
   const int p1 = min(blockIdx.x*64 + threadIdx.x, numPts1-1);
   sift1[p1].score = 0.0f;
 }
@@ -398,7 +500,180 @@ __global__ void FindMaxCorr10(SiftPoint *sift1, SiftPoint *sift2, int numPts1, i
     sift1[bp1 + tx].ambiguity = sec_score / (max_score + 1e-6f);
   }
 }
-  
+
+// Register-blocked version: the (sift1 tile, sift2 tile) pairs are distributed over
+// a grid of persistent blocks, so that a few thousand points still fill the GPU
+// evenly. Each of the 64 threads computes 8x8 correlations per tile pair from
+// k-major shared memory. Per-tile best/second-best scores go to d_best and are
+// combined by MergeMaxCorr11. Every sift2 index belongs to exactly one tile, so
+// the merged result is the exact global best and second-best.
+#define M11_T   64            // points per tile (sift1 and sift2)
+#define M11_K   16            // descriptor dimensions per shared memory stage
+#define M11_P   (M11_T + 4)   // padded stage row length, keeps float4 alignment
+#define M11_NT  64            // threads per block
+#define M11_CHUNKS 64         // sift2 chunks in a batch (d_best: M11_CHUNKS*maxPts1)
+static_assert(M11_T==64 && M11_K==16 && M11_NT==64, "FindMaxCorr11 indexing assumes 64 points per tile, 16 dimensions per stage and 64 threads");
+
+// The sift2 tiles are split in numChunks chunks of consecutive tiles, and d_best[c*stride + p1]
+// is the best and second best match of sift1 point p1 in chunk c. Outside batches, numChunks
+// is the number of sift2 tiles (one tile per chunk) and stride numPts1. In a batch, the point
+// counts are on the GPU (d_numPts1, d_numPts2), numChunks is M11_CHUNKS and stride maxPts1,
+// so that d_best has a size known on the host. The results of the tiles of a chunk are
+// combined as MergeMaxCorr11 combines those of the chunks, in the same order, so the matches
+// don't depend on the chunks.
+__global__ void __launch_bounds__(M11_NT) FindMaxCorr11(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2, float4 *d_best, int numChunks, int stride, const int *d_numPts1, const int *d_numPts2)
+{
+  if (d_numPts1) {
+    numPts1 = *d_numPts1;
+    numPts2 = *d_numPts2;
+  }
+  __shared__ __align__(16) float smem[2*M11_K*M11_P];
+  float *As = smem;
+  float *Bs = smem + M11_K*M11_P;
+  const int tid = threadIdx.x;
+  const int tx = tid%8;         // sift1 rows 4*tx+{0..3} and 32+4*tx+{0..3}
+  const int ty = tid/8;         // sift2 cols 4*ty+{0..3} and 32+4*ty+{0..3}
+  const int lp = tid/4;         // loader: point within tile (four passes of 16)
+  const int lq = tid%4;         // loader: float4 within stage
+  const float4 zero = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+  const int tiles1 = (numPts1 + M11_T - 1)/M11_T;
+  const int tiles2 = (numPts2 + M11_T - 1)/M11_T;
+  if (!tiles1 || !tiles2)
+    return;
+  const int perChunk = (tiles2 + numChunks - 1)/numChunks;   // tiles per chunk
+  const int chunks = (tiles2 + perChunk - 1)/perChunk;
+
+  for (int item=blockIdx.x;item<tiles1*chunks;item+=gridDim.x) {
+    const int bp1 = (item/chunks)*M11_T;
+    const int c = item%chunks;
+    float chunk_max = 0.0f, chunk_sec = 0.0f;   // best and second best in the chunk, row tid
+    int chunk_index = -1;
+    for (int t2=c*perChunk;t2<min((c + 1)*perChunk, tiles2);t2++) {
+    const int bp2 = t2*M11_T;
+    float acc[8][8];
+#pragma unroll
+    for (int i=0;i<8;i++)
+#pragma unroll
+      for (int j=0;j<8;j++)
+	acc[i][j] = 0.0f;
+    for (int k0=0;k0<NDIM;k0+=M11_K) {
+#pragma unroll
+      for (int r=0;r<M11_T;r+=16) {
+	int p = lp + r;
+	// Zero padding: zero descriptors score 0 and can never become best or second best
+	float4 a = (bp1 + p < numPts1 ? ((float4*)sift1[bp1 + p].data)[k0/4 + lq] : zero);
+	float4 b = (bp2 + p < numPts2 ? ((float4*)sift2[bp2 + p].data)[k0/4 + lq] : zero);
+	As[(4*lq + 0)*M11_P + p] = a.x;
+	As[(4*lq + 1)*M11_P + p] = a.y;
+	As[(4*lq + 2)*M11_P + p] = a.z;
+	As[(4*lq + 3)*M11_P + p] = a.w;
+	Bs[(4*lq + 0)*M11_P + p] = b.x;
+	Bs[(4*lq + 1)*M11_P + p] = b.y;
+	Bs[(4*lq + 2)*M11_P + p] = b.z;
+	Bs[(4*lq + 3)*M11_P + p] = b.w;
+      }
+      __syncthreads();
+#pragma unroll
+      for (int k=0;k<M11_K;k++) {
+	float4 a0 = *(float4*)&As[k*M11_P + 4*tx];
+	float4 a1 = *(float4*)&As[k*M11_P + 32 + 4*tx];
+	float4 b0 = *(float4*)&Bs[k*M11_P + 4*ty];
+	float4 b1 = *(float4*)&Bs[k*M11_P + 32 + 4*ty];
+	float av[8] = {a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w};
+	float bv[8] = {b0.x, b0.y, b0.z, b0.w, b1.x, b1.y, b1.z, b1.w};
+#pragma unroll
+	for (int i=0;i<8;i++)
+#pragma unroll
+	  for (int j=0;j<8;j++)
+	    acc[i][j] += av[i]*bv[j];
+      }
+      __syncthreads();
+    }
+
+    // Best and second best of this thread's 8 columns, then over the 8 threads sharing a row
+    float *red = smem;  // M11_T*8*3 floats, fits in smem
+#pragma unroll
+    for (int i=0;i<8;i++) {
+      float max_score = 0.0f, sec_score = 0.0f;
+      int index = -1;
+#pragma unroll
+      for (int j=0;j<8;j++) {
+	if (acc[i][j]>max_score) {
+	  sec_score = max_score;
+	  max_score = acc[i][j];
+	  index = bp2 + (j<4 ? 4*ty + j : 32 + 4*ty + j - 4);
+	} else if (acc[i][j]>sec_score)
+	  sec_score = acc[i][j];
+      }
+      int r = (i<4 ? 4*tx + i : 32 + 4*tx + i - 4);
+      red[(r*8 + ty)*3 + 0] = max_score;
+      red[(r*8 + ty)*3 + 1] = sec_score;
+      red[(r*8 + ty)*3 + 2] = __int_as_float(index);
+    }
+    __syncthreads();
+    if (bp1 + tid<numPts1) {
+      float max_score = 0.0f, sec_score = 0.0f;
+      int index = -1;
+      for (int t=0;t<8;t++) {
+	float m = red[(tid*8 + t)*3 + 0];
+	float s = red[(tid*8 + t)*3 + 1];
+	if (m>max_score) {
+	  sec_score = fmaxf(max_score, s);
+	  max_score = m;
+	  index = __float_as_int(red[(tid*8 + t)*3 + 2]);
+	} else
+	  sec_score = fmaxf(sec_score, m);
+      }
+      if (max_score>chunk_max) {
+	chunk_sec = fmaxf(chunk_max, sec_score);
+	chunk_max = max_score;
+	chunk_index = index;
+      } else
+	chunk_sec = fmaxf(chunk_sec, max_score);
+    }
+    __syncthreads();
+    }
+    if (bp1 + tid<numPts1)
+      d_best[c*stride + bp1 + tid] = make_float4(chunk_max, chunk_sec, __int_as_float(chunk_index), 0.0f);
+  }
+}
+
+__global__ void MergeMaxCorr11(SiftPoint *sift1, SiftPoint *sift2, int numPts1, int numPts2, float4 *d_best, int numChunks, int stride, const int *d_numPts1, const int *d_numPts2)
+{
+  if (d_numPts1) {
+    numPts1 = *d_numPts1;
+    numPts2 = *d_numPts2;
+  }
+  const int p1 = blockIdx.x*blockDim.x + threadIdx.x;
+  if (p1>=numPts1 || !numPts2)
+    return;
+  const int tiles2 = (numPts2 + M11_T - 1)/M11_T;
+  const int perChunk = (tiles2 + numChunks - 1)/numChunks;
+  const int chunks = (tiles2 + perChunk - 1)/perChunk;
+  float max_score = 0.0f, sec_score = 0.0f;
+  int index = -1;
+  for (int t=0;t<chunks;t++) {
+    float4 b = d_best[t*stride + p1];
+    if (b.x>max_score) {
+      sec_score = fmaxf(max_score, b.y);
+      max_score = b.x;
+      index = __float_as_int(b.z);
+    } else
+      sec_score = fmaxf(sec_score, b.x);
+  }
+  sift1[p1].score = max_score;
+  sift1[p1].ambiguity = sec_score / (max_score + 1e-6f);
+  if (index>=0 && index<numPts2) {
+    sift1[p1].match = index;
+    sift1[p1].match_xpos = sift2[index].xpos;
+    sift1[p1].match_ypos = sift2[index].ypos;
+  } else {
+    sift1[p1].match = -1;
+    sift1[p1].match_xpos = 0.0f;
+    sift1[p1].match_ypos = 0.0f;
+  }
+}
+
 #define FMC_GH  512
 #define FMC_BW   32
 #define FMC_BH   32
@@ -998,28 +1273,461 @@ __global__ void TestHomographies(float *d_coord, float *d_homo,
   __syncthreads();
 }
 
-//================= Host matching functions =====================//
-
-// Whether the 4 matches of a RANSAC sample give the triangles they form the same
-// orientation in both images, as checked by OpenCV's findHomography, COLMAP and PoseLib.
-// A homography through a sample that fails is orientation-reversing or degenerate:
-// it can't come from a camera viewing a plane, so the sample gives no hypothesis.
-// coord holds x1, y1, x2, y2 with the given stride.
-static bool SameOrientation(const float *coord, int stride, const int *sample)
+// SiftSameOrientation (cudaSiftRandom.h) for the points sample[0..3] of coord, which holds
+// x1, y1, x2, y2 with the given stride
+__host__ __device__ static bool SameOrientation(const float *coord, int stride, const int *sample)
 {
-  static const int tri[4][3] = {{0, 1, 2}, {0, 1, 3}, {2, 3, 0}, {2, 3, 1}};
-  const float *x1 = coord, *y1 = coord + stride, *x2 = coord + 2*stride, *y2 = coord + 3*stride;
-  for (int t=0;t<4;t++) {
-    const int a = sample[tri[t][0]], b = sample[tri[t][1]], c = sample[tri[t][2]];
-    double d1 = ((double)x1[b] - x1[a])*((double)y1[c] - y1[a]) - ((double)y1[b] - y1[a])*((double)x1[c] - x1[a]);
-    double d2 = ((double)x2[b] - x2[a])*((double)y2[c] - y2[a]) - ((double)y2[b] - y2[a])*((double)x2[c] - x2[a]);
-    if (d1*d2<0.0)
-      return false;
+  float x1[4], y1[4], x2[4], y2[4];
+  for (int k=0;k<4;k++) {
+    x1[k] = coord[sample[k]];
+    y1[k] = coord[sample[k] + stride];
+    x2[k] = coord[sample[k] + 2*stride];
+    y2[k] = coord[sample[k] + 3*stride];
   }
-  return true;
+  return SiftSameOrientation(x1, y1, x2, y2);
 }
 
-double FindHomography(SiftData &data, float *homography, int *numMatches, int numLoops, float minScore, float maxAmbiguity, float thresh)
+//================= Homography estimation on the GPU =====================
+// FindHomographyGPU and ImproveHomographyGPU, see the host functions below
+
+struct HomographyResult {   // homography and number of matches / inliers
+  float h[9];
+  int count;
+};
+
+// Returns a result slot for a call of the open batch. Called with the ScratchLock held.
+static HomographyResult *BatchResult(DeviceScratch &s)
+{
+  FreeScratchAtExit();
+  // First call of a new batch: the slots of the previous batch were read when it completed
+  if (s.batchId!=BatchId()) {
+    s.batchId = BatchId();
+    s.usedResults = 0;
+    s.homographies.clear();
+  }
+  if (s.usedResults==s.results.size()) {
+    void *r = NULL;
+    safeCall(cudaMalloc(&r, sizeof(HomographyResult)));
+    s.results.push_back(r);
+  }
+  return (HomographyResult *)s.results[s.usedResults++];
+}
+
+__global__ void SetResult(HomographyResult *res, HomographyResult value)
+{
+  *res = value;
+}
+
+// Coordinates of all points, and indices of the valid points (score > minScore and
+// ambiguity < maxAmbiguity) in increasing order, as in FindHomography. One block of 1024.
+__global__ void HomographyPrepare(SiftPoint *sift, int numPts, float *coord, int *valid, int *numValid, int stride, float minScore, float maxAmbiguity, const int *d_numPts)
+{
+  if (d_numPts)   // the point count on the GPU, in a batch
+    numPts = *d_numPts;
+  __shared__ int warpCount[32];
+  __shared__ int warpFirst[32];
+  __shared__ int total;
+  const int tid = threadIdx.x;
+  const int lane = tid%32;
+  const int warp = tid/32;
+  int base = 0;
+  for (int c0=0;c0<numPts;c0+=blockDim.x) {
+    const int i = c0 + tid;
+    bool ok = false;
+    if (i<numPts) {
+      coord[i + 0*stride] = sift[i].xpos;
+      coord[i + 1*stride] = sift[i].ypos;
+      coord[i + 2*stride] = sift[i].match_xpos;
+      coord[i + 3*stride] = sift[i].match_ypos;
+      ok = (sift[i].score>minScore && sift[i].ambiguity<maxAmbiguity);
+    }
+    unsigned int mask = __ballot_sync(0xffffffff, ok);
+    const int pre = __popc(mask & ((1u << lane) - 1));
+    if (lane==0)
+      warpCount[warp] = __popc(mask);
+    __syncthreads();
+    if (warp==0) {
+      int c = (lane<blockDim.x/32 ? warpCount[lane] : 0);
+      int inc = c;
+      for (int d=1;d<32;d<<=1) {
+        int n = __shfl_up_sync(0xffffffff, inc, d);
+        if (lane>=d)
+          inc += n;
+      }
+      warpFirst[lane] = inc - c;
+      if (lane==31)
+        total = inc;
+    }
+    __syncthreads();
+    if (ok)
+      valid[base + warpFirst[warp] + pre] = i;
+    base += total;
+    __syncthreads();
+  }
+  if (tid==0)
+    *numValid = base;
+}
+
+// The coordinates of the valid points, in the order of the points (valid holds their
+// indices in increasing order): RANSAC samples and counts the inliers among these only. The
+// samples depend on the order of the points, as those of FindHomographySeeded; SortSiftData
+// makes it reproducible.
+__global__ void HomographyGather(float *coord, int *valid, int *numValid, float *validCoord, int stride)
+{
+  const int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if (i>=*numValid)
+    return;
+  const int a = valid[i];
+  validCoord[i] = coord[a];
+  validCoord[i + stride] = coord[a + stride];
+  validCoord[i + 2*stride] = coord[a + 2*stride];
+  validCoord[i + 3*stride] = coord[a + 3*stride];
+}
+
+__global__ void HomographySample(float *validCoord, int *numValid, int *randPts, int *sameOrientation, int numLoops, int stride, unsigned int seed)
+{
+  const int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if (i>=numLoops)
+    return;
+  const int nv = *numValid;
+  int q[4] = {0, 0, 0, 0};
+  if (nv>=8)
+    SiftRandomSample4(seed, i, nv, q);
+  for (int k=0;k<4;k++)
+    randPts[i + k*numLoops] = q[k];
+  sameOrientation[i] = (nv>=8 && SameOrientation(validCoord, stride, q));
+}
+
+// As TestHomographies, over the *numPts valid points, and with 4 hypotheses per thread,
+// so that each point is loaded once for 4 hypotheses. 16 x 16 threads: 64 hypotheses per
+// block, the 16 threads of a row take every 16th point.
+#define TESTHOMO_PER 4
+__global__ void TestHomographiesGPU(float *d_coord, float *d_homo, int *d_counts, const int *d_numPts, int stride, int numLoops, float thresh2)
+{
+  const int numPts = *d_numPts;
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
+  const int h0 = (blockIdx.y*16 + ty)*TESTHOMO_PER;   // first hypothesis of this thread
+  float a[TESTHOMO_PER][8];
+  for (int h=0;h<TESTHOMO_PER;h++)
+    for (int i=0;i<8;i++)
+      a[h][i] = (h0 + h<numLoops ? d_homo[h0 + h + i*numLoops] : 0.0f);
+  int cnt[TESTHOMO_PER] = {0};
+  for (int i=tx;i<numPts;i+=16) {
+    float x1 = d_coord[i+0*stride];
+    float y1 = d_coord[i+1*stride];
+    float x2 = d_coord[i+2*stride];
+    float y2 = d_coord[i+3*stride];
+#pragma unroll
+    for (int h=0;h<TESTHOMO_PER;h++) {
+      float nomx = __fmul_rz(a[h][0],x1) + __fmul_rz(a[h][1],y1) + a[h][2];
+      float nomy = __fmul_rz(a[h][3],x1) + __fmul_rz(a[h][4],y1) + a[h][5];
+      float deno = __fmul_rz(a[h][6],x1) + __fmul_rz(a[h][7],y1) + 1.0f;
+      float errx = __fmul_rz(x2,deno) - nomx;
+      float erry = __fmul_rz(y2,deno) - nomy;
+      float err2 = __fmul_rz(errx,errx) + __fmul_rz(erry,erry);
+      if (err2<__fmul_rz(thresh2,__fmul_rz(deno,deno)))
+        cnt[h] ++;
+    }
+  }
+  // Sum over the 16 threads of the row (half a warp)
+#pragma unroll
+  for (int h=0;h<TESTHOMO_PER;h++)
+    for (int d=1;d<16;d<<=1)
+      cnt[h] += __shfl_xor_sync(0xffffffff, cnt[h], d);
+  if (tx<TESTHOMO_PER && h0 + tx<numLoops)
+    d_counts[h0 + tx] = cnt[tx];
+}
+
+// Hypothesis with the most inliers among those from samples that pass SameOrientation
+// (the first one in case of ties, as FindHomography). Identity and 0 matches if there are
+// fewer than 8 valid points or no sample passes. One block of 1024.
+__global__ void HomographyBest(int *d_counts, const int *sameOrientation, float *d_homo, int *numValid, HomographyResult *res, int numLoops)
+{
+  __shared__ int warpMax[32];
+  __shared__ int warpIdx[32];
+  const int tid = threadIdx.x;
+  const int lane = tid%32;
+  int maxCount = -1, maxIndex = -1;
+  for (int i=tid;i<numLoops;i+=blockDim.x)
+    if (sameOrientation[i] && d_counts[i]>maxCount) {
+      maxCount = d_counts[i];
+      maxIndex = i;
+    }
+  for (int d=16;d>0;d/=2) {
+    int c = __shfl_down_sync(0xffffffff, maxCount, d), j = __shfl_down_sync(0xffffffff, maxIndex, d);
+    if (lane+d<32 && (c>maxCount || (c==maxCount && j>=0 && (maxIndex<0 || j<maxIndex)))) {
+      maxCount = c;
+      maxIndex = j;
+    }
+  }
+  if (lane==0) {
+    warpMax[tid/32] = maxCount;
+    warpIdx[tid/32] = maxIndex;
+  }
+  __syncthreads();
+  if (tid==0) {
+    for (int w=1;w<blockDim.x/32;w++)
+      if (warpMax[w]>maxCount || (warpMax[w]==maxCount && warpIdx[w]>=0 && (maxIndex<0 || warpIdx[w]<maxIndex))) {
+        maxCount = warpMax[w];
+        maxIndex = warpIdx[w];
+      }
+    if (*numValid<8 || maxIndex<0) {
+      for (int j=0;j<9;j++)
+        res->h[j] = (j%4==0 ? 1.0f : 0.0f);
+      res->count = 0;
+    } else {
+      for (int j=0;j<8;j++)
+        res->h[j] = d_homo[maxIndex + j*numLoops];
+      res->h[8] = 1.0f;
+      res->count = maxCount;
+    }
+  }
+}
+
+// ImproveHomography (geomFuncs.cpp, in double precision on the CPU) on the GPU, in double
+// precision: numLoops iterations of least squares over the inliers, then the inlier count
+// and match_error of all points. Each iteration: ImproveAccumulate sums the normal
+// equations over the points in IMPROVE_GROUPS blocks, then ImproveSolve adds the partial
+// sums (in a fixed order) and solves them (Cholesky). The residuals are rounded to float
+// as in the CPU code; the products -x*mx, -y*mx, -x*my, -y*my are not (the CPU code
+// computes them in float). Only the non-zero terms of the equations are summed: a point's
+// two rows have non-zero coefficients 0,1,2,6,7 and 3,4,5,6,7.
+#define IMPROVE_GROUPS  16
+#define IMPROVE_NT      256
+#define IMPROVE_NV      35   // 27 non-zero entries of the symmetric 8x8 matrix + 8 of the vector
+
+struct ImproveState {       // device state between the kernels of ImproveHomographyGPU
+  double A[8];              // current homography
+  double partial[IMPROVE_GROUPS][IMPROVE_NV];
+  int counts[IMPROVE_GROUPS];
+};
+
+__device__ __inline__ float ImproveError(const double *a, float x, float y, float mx, float my)
+{
+  float den = a[6]*x + a[7]*y + 1.0f;
+  float dx = (a[0]*x + a[1]*y + a[2]) / den - mx;
+  float dy = (a[3]*x + a[4]*y + a[5]) / den - my;
+  return dx*dx + dy*dy;
+}
+
+__global__ void ImproveInit(HomographyResult *in, ImproveState *st)
+{
+  const int i = threadIdx.x;
+  if (i<8)
+    st->A[i] = in->h[i] / in->h[8];
+}
+
+__global__ void ImproveAccumulate(SiftPoint *sift, int numPts, ImproveState *st, float minScore, float maxAmbiguity, float limit, const int *d_numPts)
+{
+  if (d_numPts)   // the point count on the GPU, in a batch
+    numPts = *d_numPts;
+  __shared__ double red[IMPROVE_NT/32][IMPROVE_NV];
+  __shared__ int counts[IMPROVE_NT/32];
+  const int tid = threadIdx.x;
+  const int lane = tid%32;
+  double a[8];
+  for (int k=0;k<8;k++)
+    a[k] = st->A[k];
+  double acc[IMPROVE_NV];
+  for (int k=0;k<IMPROVE_NV;k++)
+    acc[k] = 0.0;
+  int numfit = 0;
+  for (int i=blockIdx.x*IMPROVE_NT + tid;i<numPts;i+=IMPROVE_GROUPS*IMPROVE_NT) {
+    const float x = sift[i].xpos, y = sift[i].ypos, mx = sift[i].match_xpos, my = sift[i].match_ypos;
+    if (sift[i].score<minScore || sift[i].ambiguity>maxAmbiguity)
+      continue;
+    if (!(ImproveError(a, x, y, mx, my)<limit))
+      continue;
+    numfit++;
+    // Row for match_xpos: Y = (x, y, 1, 0, 0, 0, -x*mx, -y*mx), for match_ypos: (0, 0, 0, x, y, 1, -x*my, -y*my)
+    const double u6 = - (double)x*mx, u7 = - (double)y*mx, v6 = - (double)x*my, v7 = - (double)y*my;
+    const double U[5] = {x, y, 1.0, u6, u7}, V[5] = {x, y, 1.0, v6, v7};
+    int k = 0;
+    for (int r=0;r<3;r++)
+      for (int c=r;c<5;c++, k++)
+        acc[k] += U[c]*U[r];
+    for (int r=0;r<3;r++)
+      for (int c=r;c<5;c++, k++)
+        acc[k] += V[c]*V[r];
+    acc[24] += u6*u6;
+    acc[24] += v6*v6;
+    acc[25] += u7*u6;
+    acc[25] += v7*v6;
+    acc[26] += u7*u7;
+    acc[26] += v7*v7;
+    for (int r=0;r<3;r++) {
+      acc[27 + r] += U[r]*mx;
+      acc[30 + r] += V[r]*my;
+    }
+    acc[33] += u6*mx;
+    acc[33] += v6*my;
+    acc[34] += u7*mx;
+    acc[34] += v7*my;
+  }
+  for (int k=0;k<IMPROVE_NV;k++) {
+    double v = acc[k];
+    for (int d=16;d>0;d/=2)
+      v += __shfl_xor_sync(0xffffffff, v, d);
+    if (lane==0)
+      red[tid/32][k] = v;
+  }
+  for (int d=16;d>0;d/=2)
+    numfit += __shfl_xor_sync(0xffffffff, numfit, d);
+  if (lane==0)
+    counts[tid/32] = numfit;
+  __syncthreads();
+  if (tid<IMPROVE_NV) {
+    double v = red[0][tid];
+    for (int w=1;w<IMPROVE_NT/32;w++)
+      v += red[w][tid];
+    st->partial[blockIdx.x][tid] = v;
+  }
+  if (tid==0) {
+    int n = 0;
+    for (int w=0;w<IMPROVE_NT/32;w++)
+      n += counts[w];
+    st->counts[blockIdx.x] = n;   // inliers of this iteration (ImproveFinal overwrites them)
+  }
+}
+
+// One warp: sums of the partial results, then the normal equations M A = b in shared
+// memory, and their Cholesky factorization with the column updates spread over the lanes.
+// With fewer than 4 inliers, or if M is not positive definite, the homography is kept,
+// as in ImproveHomography, and the next iterations, which have the same inliers, keep it
+// too.
+__global__ void ImproveSolve(ImproveState *st)
+{
+  int numfit = 0;
+  for (int g=0;g<IMPROVE_GROUPS;g++)
+    numfit += st->counts[g];
+  if (numfit<4)
+    return;
+  __shared__ double L[8][8];
+  __shared__ double b[8];
+  __shared__ double sum[IMPROVE_NV];
+  __shared__ bool ok;
+  const int tid = threadIdx.x;
+  for (int k=tid;k<IMPROVE_NV;k+=32) {
+    double v = st->partial[0][k];
+    for (int g=1;g<IMPROVE_GROUPS;g++)
+      v += st->partial[g][k];
+    sum[k] = v;
+  }
+  for (int k=tid;k<64;k+=32)
+    L[k/8][k%8] = 0.0;
+  __syncwarp();
+  if (tid==0) {
+    const int map[5] = {0, 1, 2, 6, 7}, map2[5] = {3, 4, 5, 6, 7};
+    int k = 0;
+    for (int r=0;r<3;r++)
+      for (int c=r;c<5;c++, k++)
+        L[map[r]][map[c]] = L[map[c]][map[r]] = sum[k];
+    for (int r=0;r<3;r++)
+      for (int c=r;c<5;c++, k++)
+        L[map2[r]][map2[c]] = L[map2[c]][map2[r]] = sum[k];
+    L[6][6] = sum[24];
+    L[6][7] = L[7][6] = sum[25];
+    L[7][7] = sum[26];
+    for (int r=0;r<3;r++) {
+      b[map[r]] = sum[27 + r];
+      b[map2[r]] = sum[30 + r];
+    }
+    b[6] = sum[33];
+    b[7] = sum[34];
+    ok = true;
+  }
+  __syncwarp();
+  for (int j=0;j<8;j++) {
+    if (tid==0) {
+      double s = L[j][j];
+      for (int k=0;k<j;k++)
+        s -= L[j][k]*L[j][k];
+      if (!(s>0.0))
+        ok = false;
+      L[j][j] = sqrt(s);
+    }
+    __syncwarp();
+    if (!ok)
+      break;
+    const int i = j + 1 + tid;
+    if (i<8) {
+      double t = L[i][j];
+      for (int k=0;k<j;k++)
+        t -= L[i][k]*L[j][k];
+      L[i][j] = t / L[j][j];
+    }
+    __syncwarp();
+  }
+  if (tid!=0 || !ok)
+    return;
+  double A[8];
+  {
+    double z[8];
+    for (int i=0;i<8;i++) {
+      double t = b[i];
+      for (int k=0;k<i;k++)
+        t -= L[i][k]*z[k];
+      z[i] = t / L[i][i];
+    }
+    for (int i=7;i>=0;i--) {
+      double t = z[i];
+      for (int k=i+1;k<8;k++)
+        t -= L[k][i]*A[k];
+      A[i] = t / L[i][i];
+    }
+  }
+  for (int i=0;i<8;i++)
+    st->A[i] = A[i];
+}
+
+__global__ void ImproveFinal(SiftPoint *sift, int numPts, ImproveState *st, float limit, const int *d_numPts)
+{
+  if (d_numPts)
+    numPts = *d_numPts;
+  __shared__ int counts[IMPROVE_NT/32];
+  const int tid = threadIdx.x;
+  double a[8];
+  for (int k=0;k<8;k++)
+    a[k] = st->A[k];
+  int numfit = 0;
+  for (int i=blockIdx.x*IMPROVE_NT + tid;i<numPts;i+=IMPROVE_GROUPS*IMPROVE_NT) {
+    float err = ImproveError(a, sift[i].xpos, sift[i].ypos, sift[i].match_xpos, sift[i].match_ypos);
+    if (err<limit)
+      numfit++;
+    sift[i].match_error = sqrtf(err);
+  }
+  for (int d=16;d>0;d/=2)
+    numfit += __shfl_xor_sync(0xffffffff, numfit, d);
+  if (tid%32==0)
+    counts[tid/32] = numfit;
+  __syncthreads();
+  if (tid==0) {
+    int n = 0;
+    for (int w=0;w<IMPROVE_NT/32;w++)
+      n += counts[w];
+    st->counts[blockIdx.x] = n;
+  }
+}
+
+__global__ void ImproveCount(ImproveState *st, HomographyResult *res)
+{
+  if (threadIdx.x!=0)
+    return;
+  int n = 0;
+  for (int g=0;g<IMPROVE_GROUPS;g++)
+    n += st->counts[g];
+  for (int k=0;k<8;k++)
+    res->h[k] = st->A[k];
+  res->h[8] = 1.0f;
+  res->count = n;
+}
+
+//================= Host matching functions =====================//
+
+// FindHomography and FindHomographySeeded: the RANSAC samples are drawn on the CPU, with
+// rand(), or with the seeded generator of cudaSiftRandom.h if seed is not NULL
+static double FindHomographyCPU(SiftData &data, float *homography, int *numMatches, int numLoops, float minScore, float maxAmbiguity, float thresh, const unsigned int *seed)
 {
   *numMatches = 0;
   homography[0] = homography[4] = homography[8] = 1.0f;
@@ -1076,19 +1784,21 @@ double FindHomography(SiftData &data, float *homography, int *numMatches, int nu
     free(h_coord);
     bool *h_sameOrientation = (bool *)malloc(sizeof(bool)*numLoops);
     for (int i=0;i<numLoops;i++) {
-      int p1 = rand() % numValid;
-      int p2 = rand() % numValid;
-      int p3 = rand() % numValid;
-      int p4 = rand() % numValid;
-      while (p2==p1) p2 = rand() % numValid;
-      while (p3==p1 || p3==p2) p3 = rand() % numValid;
-      while (p4==p1 || p4==p2 || p4==p3) p4 = rand() % numValid;
-      h_randPts[i+0*numLoops] = p1;
-      h_randPts[i+1*numLoops] = p2;
-      h_randPts[i+2*numLoops] = p3;
-      h_randPts[i+3*numLoops] = p4;
-      const int sample[4] = {p1, p2, p3, p4};
-      h_sameOrientation[i] = SameOrientation(h_valid, numValidUp, sample);
+      int p[4];
+      if (seed)
+        SiftRandomSample4(*seed, i, numValid, p);
+      else {
+        p[0] = rand() % numValid;
+        p[1] = rand() % numValid;
+        p[2] = rand() % numValid;
+        p[3] = rand() % numValid;
+        while (p[1]==p[0]) p[1] = rand() % numValid;
+        while (p[2]==p[0] || p[2]==p[1]) p[2] = rand() % numValid;
+        while (p[3]==p[0] || p[3]==p[1] || p[3]==p[2]) p[3] = rand() % numValid;
+      }
+      for (int k=0;k<4;k++)
+        h_randPts[i+k*numLoops] = p[k];
+      h_sameOrientation[i] = SameOrientation(h_valid, numValidUp, p);
     }
     free(h_valid);
     safeCall(cudaMemcpy(d_randPts, h_randPts, randSize, cudaMemcpyHostToDevice));
@@ -1125,14 +1835,188 @@ double FindHomography(SiftData &data, float *homography, int *numMatches, int nu
   return gpuTime;
 }
 
+// FindHomography and FindHomographySeeded sample the matches on the CPU: not in a batch
+static void NotInBatch()
+{
+  if (InBatch()) {
+    fprintf(stderr, "CudaSift: FindHomography and FindHomographySeeded cannot be called in a batch (BeginSiftBatch)\n");
+    exit(EXIT_FAILURE);
+  }
+  CompleteBatch();
+}
+
+double FindHomography(SiftData &data, float *homography, int *numMatches, int numLoops, float minScore, float maxAmbiguity, float thresh)
+{
+  NotInBatch();
+  return FindHomographyCPU(data, homography, numMatches, numLoops, minScore, maxAmbiguity, thresh, NULL);
+}
+
+double FindHomographySeeded(SiftData &data, float *homography, int *numMatches, int numLoops, float minScore, float maxAmbiguity, float thresh, unsigned int seed)
+{
+  NotInBatch();
+  return FindHomographyCPU(data, homography, numMatches, numLoops, minScore, maxAmbiguity, thresh, &seed);
+}
+
+static void SetIdentity(float *homography)
+{
+  for (int i=0;i<9;i++)
+    homography[i] = (i%4==0 ? 1.0f : 0.0f);
+}
+
+double FindHomographyGPU(SiftData &data, float *homography, int *numMatches, int numLoops, float minScore, float maxAmbiguity, float thresh, unsigned int seed)
+{
+  const bool batched = InBatch();
+  if (!batched)
+    CompleteBatch();
+  *numMatches = 0;
+  SetIdentity(homography);
+#ifdef MANAGEDMEM
+  SiftPoint *d_sift = data.m_data;
+#else
+  SiftPoint *d_sift = data.d_data;
+#endif
+  int numPts = data.numPts;
+  if (d_sift==NULL || (!batched && numPts<8) || data.maxPts<8)
+    return 0.0;
+  // In a batch, the point count is on the GPU, and numPts is the capacity, for the scratch
+  // memory and the grids (with fewer than 8 points, HomographyBest returns the identity)
+  const int *d_numPts = NULL;
+  if (batched) {
+    d_numPts = BatchCount(data);
+    numPts = data.maxPts;
+  }
+  auto lock = ScratchLock();
+  TimerGPU timer(0);
+  numLoops = iDivUp(numLoops, 16)*16;
+  const int stride = iDivUp(numPts, 16)*16;
+  float *d_coord = (float *)Scratch(SCRATCH_COORD, 8*sizeof(float)*stride);   // all points, then the valid ones
+  float *d_validCoord = d_coord + 4*stride;
+  int *d_valid = (int *)Scratch(SCRATCH_VALID, sizeof(int)*numPts + sizeof(int));   // valid, numValid
+  int *d_numValid = d_valid + numPts;
+  int *d_randPts = (int *)Scratch(SCRATCH_RANDPTS, 5*sizeof(int)*numLoops);   // samples (also the counts), orientation checks
+  int *d_sameOrientation = d_randPts + 4*numLoops;
+  float *d_homo = (float *)Scratch(SCRATCH_HOMO, 8*sizeof(float)*numLoops);
+  int device;
+  safeCall(cudaGetDevice(&device));
+  DeviceScratch &s = DeviceScratchOf(device);
+  HomographyResult *d_res = (batched ? BatchResult(s) : (HomographyResult *)Scratch(SCRATCH_RESULT, sizeof(HomographyResult)));
+  HomographyPrepare<<<1, 1024>>>(d_sift, numPts, d_coord, d_valid, d_numValid, stride, minScore, maxAmbiguity, d_numPts);
+  HomographyGather<<<iDivUp(numPts, 256), 256>>>(d_coord, d_valid, d_numValid, d_validCoord, stride);
+  HomographySample<<<iDivUp(numLoops, 64), 64>>>(d_validCoord, d_numValid, d_randPts, d_sameOrientation, numLoops, stride, seed);
+  ComputeHomographies<<<numLoops/16, 16>>>(d_validCoord, d_randPts, d_homo, stride);
+  TestHomographiesGPU<<<dim3(1, iDivUp(numLoops, 64)), dim3(16, 16)>>>(d_validCoord, d_homo, d_randPts, d_numValid, stride, numLoops, thresh*thresh);
+  HomographyBest<<<1, 1024>>>(d_randPts, d_sameOrientation, d_homo, d_numValid, d_res, numLoops);
+  checkMsg("FindHomographyGPU() execution failed\n");
+  if (batched) {
+    s.homographies[homography] = d_res;   // for ImproveHomographyGPU later in the batch
+    AfterBatch([=]() {
+      HomographyResult res;
+      safeCall(cudaMemcpy(&res, d_res, sizeof(res), cudaMemcpyDeviceToHost));
+      memcpy(homography, res.h, sizeof(res.h));
+      *numMatches = res.count;
+    });
+    return 0.0;
+  }
+  HomographyResult res;
+  safeCall(cudaMemcpy(&res, d_res, sizeof(res), cudaMemcpyDeviceToHost));
+  memcpy(homography, res.h, sizeof(res.h));
+  *numMatches = res.count;
+  double gpuTime = timer.read();
+#ifdef VERBOSE
+  printf("FindHomographyGPU time =      %.2f ms\n", gpuTime);
+#endif
+  return gpuTime;
+}
+
+double ImproveHomographyGPU(SiftData &data, float *homography, int *numFit, int numLoops, float minScore, float maxAmbiguity, float thresh)
+{
+  const bool batched = InBatch();
+  if (!batched)
+    CompleteBatch();
+  *numFit = 0;
+#ifdef MANAGEDMEM
+  SiftPoint *d_sift = data.m_data;
+#else
+  SiftPoint *d_sift = data.d_data;
+#endif
+  const int numPts = data.numPts;
+  if (d_sift==NULL)
+    return 0.0;
+  const int *d_numPts = (batched ? BatchCount(data) : NULL);   // in a batch, the count on the GPU
+  auto lock = ScratchLock();
+  TimerGPU timer(0);
+  ImproveState *d_state = (ImproveState *)Scratch(SCRATCH_IMPROVE_STATE, sizeof(ImproveState));
+  HomographyResult *d_in, *d_out;
+  int device;
+  safeCall(cudaGetDevice(&device));
+  DeviceScratch &s = DeviceScratchOf(device);
+  HomographyResult in;
+  memcpy(in.h, homography, sizeof(in.h));
+  in.count = 0;
+  if (batched) {
+    // The input: the result of a previous call of the batch for this homography, else the
+    // homography on the host now
+    d_in = BatchResult(s);
+    d_out = BatchResult(s);
+    auto it = s.homographies.find(homography);
+    if (it!=s.homographies.end())
+      safeCall(cudaMemcpyAsync(d_in, it->second, sizeof(HomographyResult), cudaMemcpyDeviceToDevice));
+    else
+      SetResult<<<1, 1>>>(d_in, in);
+  } else {
+    d_in = (HomographyResult *)Scratch(SCRATCH_IMPROVE_RESULT, 2*sizeof(HomographyResult));
+    d_out = d_in + 1;
+    safeCall(cudaMemcpy(d_in, &in, sizeof(in), cudaMemcpyHostToDevice));
+  }
+  const float limit = thresh*thresh;
+  ImproveInit<<<1, 32>>>(d_in, d_state);
+  for (int loop=0;loop<numLoops;loop++) {
+    ImproveAccumulate<<<IMPROVE_GROUPS, IMPROVE_NT>>>(d_sift, numPts, d_state, minScore, maxAmbiguity, limit, d_numPts);
+    ImproveSolve<<<1, 32>>>(d_state);
+  }
+  ImproveFinal<<<IMPROVE_GROUPS, IMPROVE_NT>>>(d_sift, numPts, d_state, limit, d_numPts);
+  ImproveCount<<<1, 32>>>(d_state, d_out);
+  checkMsg("ImproveHomographyGPU() execution failed\n");
+  if (batched) {
+    s.homographies[homography] = d_out;
+    // The deferred work runs in call order, after that of the ExtractSift call that set numPts
+    SiftData *pd = &data;
+    AfterBatch([=]() {
+      HomographyResult res;
+      safeCall(cudaMemcpy(&res, d_out, sizeof(res), cudaMemcpyDeviceToHost));
+      memcpy(homography, res.h, sizeof(res.h));
+      *numFit = res.count;
+#ifndef MANAGEDMEM
+      if (pd->h_data!=NULL && pd->numPts>0)
+        safeCall(cudaMemcpy2D(&pd->h_data[0].match_error, sizeof(SiftPoint), &pd->d_data[0].match_error, sizeof(SiftPoint), sizeof(float), pd->numPts, cudaMemcpyDeviceToHost));
+#endif
+    });
+    return 0.0;
+  }
+  HomographyResult res;
+  safeCall(cudaMemcpy(&res, d_out, sizeof(res), cudaMemcpyDeviceToHost));
+  memcpy(homography, res.h, sizeof(res.h));
+  *numFit = res.count;
+#ifndef MANAGEDMEM
+  if (data.h_data!=NULL && numPts>0)   // match_error, as ImproveHomography sets it on the host
+    safeCall(cudaMemcpy2D(&data.h_data[0].match_error, sizeof(SiftPoint), &d_sift[0].match_error, sizeof(SiftPoint), sizeof(float), numPts, cudaMemcpyDeviceToHost));
+#endif
+  return timer.read();
+}
 
 double MatchSiftData(SiftData &data1, SiftData &data2)
 {
-  TimerGPU timer(0);
+  const bool batched = InBatch();
+  if (!batched)
+    CompleteBatch();
   int numPts1 = data1.numPts;
   int numPts2 = data2.numPts;
-  if (!numPts1 || !numPts2) 
+  if (!batched && (!numPts1 || !numPts2))
     return 0.0;
+  if (batched && (!data1.maxPts || !data2.maxPts))   // no points
+    return 0.0;
+  auto lock = ScratchLock();   // Scratch, until the end of the call
+  TimerGPU timer(0);
 #ifdef MANAGEDMEM
   SiftPoint *sift1 = data1.m_data;
   SiftPoint *sift2 = data2.m_data;
@@ -1142,6 +2026,15 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
   SiftPoint *sift1 = data1.d_data;
   SiftPoint *sift2 = data2.d_data;
 #endif
+  // In a batch, the point counts are on the GPU, and the grids and the scratch memory are
+  // sized for the capacities
+  const int *d_numPts1 = NULL, *d_numPts2 = NULL;
+  if (batched) {
+    d_numPts1 = BatchCount(data1);
+    d_numPts2 = BatchCount(data2);
+    numPts1 = data1.maxPts;
+    numPts2 = data2.maxPts;
+  }
   
 // Original version with correlation and maximization in two different kernels
 // Global memory reguirement: O(N^2)
@@ -1205,8 +2098,8 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
 #if 1
   dim3 blocksMax3(iDivUp(numPts1, 16), iDivUp(numPts2, 512));
   dim3 threadsMax3(16, 16);
-  CleanMatches<<<iDivUp(numPts1, 64), 64>>>(sift1, numPts1);
-  int mode = 10;
+  CleanMatches<<<iDivUp(numPts1, 64), 64>>>(sift1, numPts1, numPts2, d_numPts1, d_numPts2);
+  int mode = 11;
   if (mode==5)// K40c 5.0ms, 1080 Ti 1.2ms, 2080 Ti 0.83ms
     FindMaxCorr5<<<blocksMax3, threadsMax3>>>(sift1, sift2, numPts1, numPts2);
   else if (mode==6) {                    // 2080 Ti 0.89ms
@@ -1226,18 +2119,49 @@ double MatchSiftData(SiftData &data1, SiftData &data2)
     blocksMax3 = dim3(iDivUp(numPts1, M7W));
     threadsMax3 = dim3(M7W, M7H/M7R);
     FindMaxCorr10<<<blocksMax3, threadsMax3>>>(sift1, sift2, numPts1, numPts2);
+  } else if (mode==11) {                 // T4 (2060 pts): FindMaxCorr10 0.44ms, FindMaxCorr11 0.27ms
+    // Per-tile results buffer (Scratch), and number of resident blocks per device
+    int device;
+    safeCall(cudaGetDevice(&device));
+    int &maxBlocks = DeviceScratchOf(device).maxBlocks;   // under the ScratchLock
+    if (maxBlocks==0) {
+      int numSMs, blocksPerSM;
+      safeCall(cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, device));
+      safeCall(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocksPerSM, FindMaxCorr11, M11_NT, 0));
+      maxBlocks = numSMs*blocksPerSM;
+    }
+    int tiles1 = iDivUp(numPts1, M11_T);
+    int tiles2 = iDivUp(numPts2, M11_T);
+    // Outside batches, one tile per chunk; in a batch, the counts are on the GPU, and
+    // numPts1, numPts2 are the capacities
+    const int numChunks = (batched ? M11_CHUNKS : tiles2);
+    const int stride = numPts1;
+    float4 *d_best = (float4 *)Scratch(SCRATCH_BEST, sizeof(float4)*numChunks*stride);
+    FindMaxCorr11<<<min(tiles1*tiles2, maxBlocks), M11_NT>>>(sift1, sift2, numPts1, numPts2, d_best, numChunks, stride, d_numPts1, d_numPts2);
+    MergeMaxCorr11<<<iDivUp(numPts1, 128), 128>>>(sift1, sift2, numPts1, numPts2, d_best, numChunks, stride, d_numPts1, d_numPts2);
   }
-  safeCall(cudaDeviceSynchronize());
+  if (!batched)
+    safeCall(cudaDeviceSynchronize());
   checkMsg("FindMaxCorr5() execution failed\n");
 #endif
 
 #ifndef MANAGEDMEM
-  if (data1.h_data!=NULL) {
-    float *h_ptr = &data1.h_data[0].score;
-    float *d_ptr = &data1.d_data[0].score;
-    safeCall(cudaMemcpy2D(h_ptr, sizeof(SiftPoint), d_ptr, sizeof(SiftPoint), 5*sizeof(float), data1.numPts, cudaMemcpyDeviceToHost));
-  }
+  auto copyMatches = [](SiftData *data) {   // score, ambiguity, match, match_xpos, match_ypos
+    if (data->h_data!=NULL && data->numPts>0) {
+      float *h_ptr = &data->h_data[0].score;
+      float *d_ptr = &data->d_data[0].score;
+      safeCall(cudaMemcpy2D(h_ptr, sizeof(SiftPoint), d_ptr, sizeof(SiftPoint), 5*sizeof(float), data->numPts, cudaMemcpyDeviceToHost));
+    }
+  };
+  if (batched) {
+    // The deferred work runs in call order, after that of the ExtractSift call that set numPts
+    SiftData *d1 = &data1;
+    AfterBatch([=]() { copyMatches(d1); });
+  } else
+    copyMatches(&data1);
 #endif
+  if (batched)
+    return 0.0;
 
   double gpuTime = timer.read();
 #ifdef VERBOSE

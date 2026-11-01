@@ -168,6 +168,31 @@ __global__ void ScaleDown(float *d_Result, float *d_Data, int width, int pitch, 
   }
 }
 
+// One thread per output pixel, input read through the L1 cache. Same operations as
+// ScaleDown (horizontal then vertical 5-tap filter, same edge clamping), without the
+// per-row block synchronization.
+__global__ void ScaleDownDirect(float *d_Result, float *d_Data, int width, int pitch, int height, int newpitch)
+{
+  const int x = blockIdx.x*blockDim.x + threadIdx.x;
+  const int y = blockIdx.y*blockDim.y + threadIdx.y;
+  if (x>=width/2 || y>=height/2)
+    return;
+  float k0 = d_ScaleDownKernel[0];
+  float k1 = d_ScaleDownKernel[1];
+  float k2 = d_ScaleDownKernel[2];
+  int xc[5];
+#pragma unroll
+  for (int j=0;j<5;j++)
+    xc[j] = max(min(2*x + j - 2, width-1), 0);
+  float h[5];
+#pragma unroll
+  for (int i=0;i<5;i++) {
+    const float *row = d_Data + max(min(2*y + i - 2, height-1), 0)*pitch;
+    h[i] = k0*(row[xc[0]]+row[xc[4]]) + k1*(row[xc[1]]+row[xc[3]]) + k2*row[xc[2]];
+  }
+  d_Result[y*newpitch + x] = k2*h[2] + k0*(h[0]+h[4]) + k1*(h[1]+h[3]);
+}
+
 __global__ void ScaleUp(float *d_Result, float *d_Data, int width, int pitch, int height, int newpitch)
 {
   const int tx = threadIdx.x;
@@ -420,6 +445,120 @@ __global__ void ExtractSiftDescriptorsCONSTNew(cudaTextureObject_t texObj, SiftP
   }
 }
  
+
+// Same descriptor as ExtractSiftDescriptorsCONSTNew, without shared memory atomics:
+// each thread first computes the 4 spatially weighted gradients of its 2 samples (same
+// operations), then each thread sums the contributions to one of the 128 histogram bins
+// from the 8x8 samples around it, in a fixed order. The result is deterministic.
+__global__ void ExtractSiftDescriptorsGather(cudaTextureObject_t texObj, SiftPoint *d_sift, float subsampling, int octave)
+{
+  __shared__ float gauss[16];
+  __shared__ float sgrad[4][256];   // [2*dv + dh][16*y + x]: weights for bins (veri+dv, hori+dh)
+  __shared__ float sangf[256];      // fractional angle bin
+  __shared__ int sangi[256];        // integer angle bin
+  __shared__ float sums[4];
+
+  const int tx = threadIdx.x; // 0 -> 16
+  const int ty = threadIdx.y; // 0 -> 8
+  const int idx = ty*16 + tx;
+  if (ty==0)
+    gauss[tx] = __expf(-(tx-7.5f)*(tx-7.5f)/128.0f);
+  // Histogram bin of this thread, as hist = 8*(4*veri + hori) + angle
+  const int bv = idx/32;
+  const int bh = (idx/8)%4;
+  const int ba = idx%8;
+
+  int fstPts = min(d_PointCounter[2*octave-1], d_MaxNumPoints);
+  int totPts = min(d_PointCounter[2*octave+1], d_MaxNumPoints);
+  for (int bx = blockIdx.x + fstPts; bx < totPts; bx += gridDim.x) {
+    __syncthreads();
+
+    // Compute angles and gradients
+    float theta = 2.0f*3.1415f/360.0f*d_sift[bx].orientation;
+    float sina = __sinf(theta);           // cosa -sina
+    float cosa = __cosf(theta);           // sina  cosa
+    float scale = 12.0f/16.0f*d_sift[bx].scale;
+    float ssina = scale*sina;
+    float scosa = scale*cosa;
+
+    for (int y=ty;y<16;y+=8) {
+      float xpos = d_sift[bx].xpos + (tx-7.5f)*scosa - (y-7.5f)*ssina + 0.5f;
+      float ypos = d_sift[bx].ypos + (tx-7.5f)*ssina + (y-7.5f)*scosa + 0.5f;
+      float dx = tex2D<float>(texObj, xpos+cosa, ypos+sina) -
+	tex2D<float>(texObj, xpos-cosa, ypos-sina);
+      float dy = tex2D<float>(texObj, xpos-sina, ypos+cosa) -
+	tex2D<float>(texObj, xpos+sina, ypos-cosa);
+      float grad = gauss[y]*gauss[tx] * __fsqrt_rn(dx*dx + dy*dy);
+      float angf = 4.0f/3.14159265f*FastAtan2(dy, dx) + 4.0f;
+      angf = (angf>=8.0f ? angf - 8.0f : angf);   // atan2 = pi is angle 0, not 8
+
+      int hori = (tx + 2)/4 - 1;      // Convert from (tx,y,angle) to bins
+      float horf = (tx - 1.5f)/4.0f - hori;
+      float ihorf = 1.0f - horf;
+      int veri = (y + 2)/4 - 1;
+      float verf = (y - 1.5f)/4.0f - veri;
+      float iverf = 1.0f - verf;
+      int angi = angf;                // 0..7
+      angf -= angi;
+
+      const int s = 16*y + tx;
+      float grad1 = ihorf*grad;
+      sgrad[0][s] = iverf*grad1;    // Upper left
+      sgrad[2][s] = verf*grad1;     // Lower left
+      grad1 = horf*grad;
+      sgrad[1][s] = iverf*grad1;    // Upper right
+      sgrad[3][s] = verf*grad1;     // Lower right
+      sangf[s] = angf;
+      sangi[s] = angi;
+    }
+    __syncthreads();
+
+    // Samples with hori==bh (x in 4*bh+2..4*bh+5) contribute with dh=0, samples with
+    // hori==bh-1 (x in 4*bh-2..4*bh+1) with dh=1. Same for rows. Equivalent to the
+    // tx>=2, tx<=13, y>=2, y<=13 conditions of the scattering version.
+    float bin = 0.0f;
+    const int ap = (ba>0 ? ba-1 : 7);   // samples with angi==ap have angp==ba
+    for (int y=max(4*bv-2, 0);y<min(4*bv+6, 16);y++) {
+      const int dv = (y<4*bv+2 ? 2 : 0);
+      for (int x=max(4*bh-2, 0);x<min(4*bh+6, 16);x++) {
+	const int s = 16*y + x;
+	const float grad2 = sgrad[dv + (x<4*bh+2 ? 1 : 0)][s];
+	const int angi = sangi[s];
+	const float angf = sangf[s];
+	if (angi==ba)
+	  bin += (1.0f - angf)*grad2;
+	else if (angi==ap)
+	  bin += angf*grad2;
+      }
+    }
+    // Normalize twice and suppress peaks first time
+    float sum = bin*bin;
+    for (int i=16;i>0;i/=2)
+      sum += ShiftDown(sum, i);
+    if ((idx&31)==0)
+      sums[idx/32] = sum;
+    __syncthreads();
+    float tsum1 = sums[0] + sums[1] + sums[2] + sums[3];
+    tsum1 = min(bin * rsqrtf(tsum1), 0.2f);
+
+    sum = tsum1*tsum1;
+    for (int i=16;i>0;i/=2)
+      sum += ShiftDown(sum, i);
+    __syncthreads();
+    if ((idx&31)==0)
+      sums[idx/32] = sum;
+    __syncthreads();
+
+    float tsum2 = sums[0] + sums[1] + sums[2] + sums[3];
+    float *desc = d_sift[bx].data;
+    desc[idx] = tsum1 * rsqrtf(tsum2);
+    if (idx==0) {
+      d_sift[bx].xpos *= subsampling;
+      d_sift[bx].ypos *= subsampling;
+      d_sift[bx].scale *= subsampling;
+    }
+  }
+}
 
 __global__ void ExtractSiftDescriptorsCONST(cudaTextureObject_t texObj, SiftPoint *d_sift, float subsampling, int octave)
 {
@@ -756,10 +895,12 @@ __device__ void ExtractSiftDescriptor(cudaTextureObject_t texObj, SiftPoint *d_s
 }
 
 
-__global__ void RescalePositions(SiftPoint *d_sift, int numPts, float scale)
+// In a batch, d_numPts points to the point count on the GPU, and the grid covers maxPts.
+// Outside batches, d_numPts is NULL and numPts is the count.
+__global__ void RescalePositions(SiftPoint *d_sift, int numPts, float scale, const int *d_numPts)
 {
   int num = blockIdx.x*blockDim.x + threadIdx.x;
-  if (num<numPts) {
+  if (num<(d_numPts ? *d_numPts : numPts)) {
     d_sift[num].xpos *= scale;
     d_sift[num].ypos *= scale;
     d_sift[num].scale *= scale;
@@ -979,6 +1120,8 @@ __global__ void ComputeOrientationsCONST(cudaTextureObject_t texObj, SiftPoint *
 {
   __shared__ float hist[64];
   __shared__ float gauss[11];
+  __shared__ float sgrad[11*11 + 3];   // + 3: the sum below may be compiled to 16-byte loads
+  __shared__ int sbin[11*11 + 3];
   const int tx = threadIdx.x;
   
   int fstPts = min(d_PointCounter[2*octave-1], d_MaxNumPoints);
@@ -1004,7 +1147,16 @@ __global__ void ComputeOrientationsCONST(cudaTextureObject_t texObj, SiftPoint *
       if (bin>31)
 	bin = 0;
       float grad = sqrtf(dx*dx + dy*dy);
-      atomicAdd(&hist[bin], grad*gauss[xd]*gauss[yd]);
+      sgrad[tx] = grad*gauss[xd]*gauss[yd];
+      sbin[tx] = bin;
+    }
+    __syncthreads();
+    // Histogram summed in a fixed order (instead of atomicAdd), so the result is deterministic
+    if (tx<32) {
+      float sum = 0.0f;
+      for (int i=0;i<11*11;i++)
+	sum += (sbin[i]==tx ? sgrad[i] : 0.0f);
+      hist[tx] = sum;
     }
     __syncthreads();
     int x1m = (tx>=1 ? tx-1 : tx+31);
@@ -1728,6 +1880,247 @@ __global__ void FindPointsMultiOld(float *d_Data0, SiftPoint *d_Sift, int width,
 }
 
 
+// Fused LaplaceMulti + FindPointsMulti: the DoG layers are computed tile by tile in
+// shared memory and never written to global memory. Each block covers MINMAX_W
+// columns and FUSED_FY*MINMAX_H rows, i.e. FUSED_FY FindPointsMultiNew blocks, and
+// reproduces their arithmetic (and their 32 candidate limit) exactly. The filters
+// use the same operations in the same order as LaplaceMultiMem, so the DoG values,
+// and hence the detected points, are identical.
+#define FUSED_FY   4                          // FindPoints tiles (MINMAX_H rows) per block
+#define FUSED_RH   (MINMAX_H*FUSED_FY + 2)    // DoG region rows, incl. 1-row halo
+#define FUSED_RW   (MINMAX_W + 2)             // DoG region columns, incl. 1-column halo (one warp)
+#define FUSED_VW   (FUSED_RW + 2*LAPLACE_R)   // vertically filtered columns
+#define FUSED_SH   5                          // rows per thread in vertical pass
+#define FUSED_NT   288                        // threads per block
+static_assert(FUSED_RW==32, "one warp per row of the DoG region");
+static_assert((4 + 2*LAPLACE_R)%4==0, "float4 windows in the horizontal pass");
+static_assert(MINMAX_H<=32, "one bit per row of a FindPoints tile");
+static_assert(FUSED_NT%32==0 && FUSED_NT/32>=FUSED_FY, "one warp per FindPoints tile");
+static_assert(FUSED_NT>=FUSED_RH*FUSED_RW/4, "horizontal pass: 4 values per thread");
+static_assert(FUSED_NT>=FUSED_VW*((FUSED_RH + FUSED_SH - 1)/FUSED_SH), "vertical pass: FUSED_SH rows per thread");
+
+__global__ void __launch_bounds__(FUSED_NT, 3) LaplaceFindPoints(float *d_Image, SiftPoint *d_Sift, int width, int pitch, int height, float subsampling, float lowestScale, float thresh, float factor, float edgeLimit, int octave)
+{
+  __shared__ __align__(16) float vbuf[FUSED_RH*FUSED_VW];     // vertically filtered image, current scale
+  __shared__ __align__(16) float dogs[3][FUSED_RH*FUSED_RW];  // ring buffer of the three latest DoG layers
+  __shared__ unsigned short points[FUSED_FY][2*FUSED_RW];
+  const int tid = threadIdx.x;
+  const int minx = blockIdx.x*MINMAX_W;
+  const int y0 = blockIdx.y*MINMAX_H*FUSED_FY;
+  if (blockIdx.x==0 && blockIdx.y==0 && tid==0) {
+    atomicMax(&d_PointCounter[2*octave+0], d_PointCounter[2*octave-1]);
+    atomicMax(&d_PointCounter[2*octave+1], d_PointCounter[2*octave-1]);
+  }
+
+  // Vertical pass: column vc (image column clamp(minx-1-LAPLACE_R+vc)), region rows
+  // r0..r0+FUSED_SH-1 (image rows y0-1+r, out-of-image rows are computed but never used)
+  const int vc = tid%FUSED_VW;
+  const int r0 = (tid/FUSED_VW)*FUSED_SH;
+  const bool vact = (r0<FUSED_RH);
+  float src[FUSED_SH + 2*LAPLACE_R];
+  if (vact) {
+    const float *data = d_Image + max(min(minx - 1 - LAPLACE_R + vc, width-1), 0);
+#pragma unroll
+    for (int i=0;i<FUSED_SH+2*LAPLACE_R;i++)
+      src[i] = data[max(0, min(y0 - 1 + r0 - LAPLACE_R + i, height - 1))*pitch];
+  }
+  // Horizontal pass: thread handles region row hr, columns 4*hg..4*hg+3. Region position
+  // (rr, cc) holds the DoG at image position (clamp(y0-1+rr), clamp(minx-1+cc)), filtered
+  // around that clamped position. Without clamping, the 4 outputs read 12 consecutive values.
+  const int hr = tid/(FUSED_RW/4);
+  const int hg = tid%(FUSED_RW/4);
+  const bool hact = (hr<FUSED_RH);
+  const int vrow = (max(0, min(y0 - 1 + hr, height - 1)) - (y0 - 1))*FUSED_VW;
+  int hcol[4];
+#pragma unroll
+  for (int i=0;i<4;i++)
+    hcol[i] = max(0, min(minx - 1 + 4*hg + i, width - 1)) - (minx - 1 - LAPLACE_R);
+  const bool hcontig = (hcol[0]==4*hg + LAPLACE_R && hcol[3]==4*hg + 3 + LAPLACE_R);
+  float prev[4];
+  for (int scale=0;scale<LAPLACE_S;scale++) {
+    const float *kernel = d_LaplaceKernel + octave*12*16 + scale*16;
+    float kern[LAPLACE_R + 1];
+#pragma unroll
+    for (int i=0;i<=LAPLACE_R;i++)
+      kern[i] = kernel[i];
+    if (vact) {
+#pragma unroll
+      for (int k=0;k<FUSED_SH;k++) {
+	float sum = kern[0]*src[k + LAPLACE_R];
+#pragma unroll
+	for (int j=1;j<=LAPLACE_R;j++)
+	  sum += kern[j]*(src[k + LAPLACE_R - j] + src[k + LAPLACE_R + j]);
+	if (r0 + k<FUSED_RH)
+	  vbuf[(r0 + k)*FUSED_VW + vc] = sum;
+      }
+    }
+    __syncthreads();
+    if (hact) {
+      float res[4];
+      if (hcontig) {
+	float w[4 + 2*LAPLACE_R];
+	const float4 *v4 = (const float4*)(vbuf + vrow + 4*hg);
+#pragma unroll
+	for (int i=0;i<(4 + 2*LAPLACE_R)/4;i++) {
+	  float4 v = v4[i];
+	  w[4*i + 0] = v.x;
+	  w[4*i + 1] = v.y;
+	  w[4*i + 2] = v.z;
+	  w[4*i + 3] = v.w;
+	}
+#pragma unroll
+	for (int i=0;i<4;i++) {
+	  res[i] = kern[0]*w[i + LAPLACE_R];
+#pragma unroll
+	  for (int j=1;j<=LAPLACE_R;j++)
+	    res[i] += kern[j]*(w[i + LAPLACE_R - j] + w[i + LAPLACE_R + j]);
+	}
+      } else {
+#pragma unroll
+	for (int i=0;i<4;i++) {
+	  const float *v = vbuf + vrow + hcol[i];
+	  res[i] = kern[0]*v[0];
+#pragma unroll
+	  for (int j=1;j<=LAPLACE_R;j++)
+	    res[i] += kern[j]*(v[-j] + v[j]);
+	}
+      }
+      if (scale>0)
+	*(float4*)&dogs[(scale + 2)%3][hr*FUSED_RW + 4*hg] =  // DoG layer scale-1
+	  make_float4(res[0] - prev[0], res[1] - prev[1], res[2] - prev[2], res[3] - prev[3]);
+#pragma unroll
+      for (int i=0;i<4;i++)
+	prev[i] = res[i];
+    }
+    __syncthreads();
+    if (scale<3)
+      continue;
+
+    // Extrema detection in DoG layer s+1, as FindPointsMultiNew, one warp per MINMAX_H rows
+    const int s = scale - 3;
+    const int warp = tid/32;
+    const int tx = tid%32;
+    const int ystart = y0 + MINMAX_H*warp;
+    const int yloops = min(height - ystart, MINMAX_H);
+    if (warp>=FUSED_FY || yloops<=0)
+      continue;
+    const float *D0 = dogs[s%3];
+    const float *D1 = dogs[(s + 1)%3];
+    const float *D2 = dogs[(s + 2)%3];
+    const int maxx = min(minx + MINMAX_W, width);
+    const int xpos = minx + tx;
+    int ptbits = 0;
+    for (int y=0;y<yloops;y++) {
+      const int r1 = (MINMAX_H*warp + y + 1)*FUSED_RW + tx;
+      float d11 = D1[r1];
+      if (__any_sync(0xffffffff, fabs(d11)>thresh)) {
+	const int r0 = r1 - FUSED_RW;
+	const int r2 = r1 + FUSED_RW;
+	float d01 = D0[r1];
+	float d10 = D1[r0];
+	float d12 = D1[r2];
+	float d21 = D2[r1];
+
+	float d00 = D0[r0];
+	float d02 = D0[r2];
+	float ymin1 = fminf(fminf(d00, d01), d02);
+	float ymax1 = fmaxf(fmaxf(d00, d01), d02);
+	float d20 = D2[r0];
+	float d22 = D2[r2];
+	float ymin3 = fminf(fminf(d20, d21), d22);
+	float ymax3 = fmaxf(fmaxf(d20, d21), d22);
+	float ymin2 = fminf(fminf(ymin1, fminf(fminf(d10, d12), d11)), ymin3);
+	float ymax2 = fmaxf(fmaxf(ymax1, fmaxf(fmaxf(d10, d12), d11)), ymax3);
+
+	float nmin2 = fminf(ShiftUp(ymin2, 1), ShiftDown(ymin2, 1));
+	float nmax2 = fmaxf(ShiftUp(ymax2, 1), ShiftDown(ymax2, 1));
+	float minv = fminf(fminf(nmin2, ymin1), ymin3);
+	minv = fminf(fminf(minv, d10), d12);
+	float maxv = fmaxf(fmaxf(nmax2, ymax1), ymax3);
+	maxv = fmaxf(fmaxf(maxv, d10), d12);
+
+	if (tx>0 && tx<MINMAX_W+1 && xpos<=maxx)
+	  ptbits |= ((d11 < fminf(-thresh, minv)) | (d11 > fmaxf(thresh, maxv))) << y;
+      }
+    }
+
+    unsigned int totbits = __popc(ptbits);
+    unsigned int numbits = totbits;
+    for (int d=1;d<32;d<<=1) {
+      unsigned int num = ShiftUp(totbits, d);
+      if (tx >= d)
+	totbits += num;
+    }
+    int pos = totbits - numbits;
+    unsigned short *wpoints = points[warp];
+    for (int y=0;y<yloops;y++) {
+      int ypos = ystart + y;
+      if (ptbits & (1 << y) && pos<FUSED_RW) {
+	wpoints[2*pos + 0] = xpos - 1;
+	wpoints[2*pos + 1] = ypos;
+	pos ++;
+      }
+    }
+    __syncwarp();
+    totbits = Shuffle(totbits, 31);
+    if (tx<totbits) {
+      int xpos = wpoints[2*tx + 0];
+      int ypos = wpoints[2*tx + 1];
+      int ptr = (ypos - y0 + 1)*FUSED_RW + xpos - (minx - 1);
+      const int pitch = FUSED_RW;
+      float val = D1[ptr];
+      const float *data1 = &D1[ptr];
+      // Negated Hessian (dxx = -d2/dx2, dxy = -d2/dxdy, ...): the offset is its inverse times
+      // the gradient (data0: layer s, less blur; data2: layer s+2, more blur)
+      float dxx = 2.0f*val - data1[-1] - data1[1];
+      float dyy = 2.0f*val - data1[-pitch] - data1[pitch];
+      float dxy = 0.25f*(data1[-pitch+1] + data1[+pitch-1] - data1[+pitch+1] - data1[-pitch-1]);
+      float tra = dxx + dyy;
+      float det = dxx*dyy - dxy*dxy;
+      if (tra*tra<edgeLimit*det) {
+	float edge = __fdividef(tra*tra, det);
+	float dx = 0.5f*(data1[1] - data1[-1]);
+	float dy = 0.5f*(data1[pitch] - data1[-pitch]);
+	const float *data0 = &D0[ptr];
+	const float *data2 = &D2[ptr];
+	float ds = 0.5f*(data2[0] - data0[0]);
+	float dss = 2.0f*val - data2[0] - data0[0];
+	float dxs = 0.25f*(data0[1] + data2[-1] - data2[1] - data0[-1]);
+	float dys = 0.25f*(data0[pitch] + data2[-pitch] - data2[pitch] - data0[-pitch]);
+	float idxx = dyy*dss - dys*dys;
+	float idxy = dys*dxs - dxy*dss;
+	float idxs = dxy*dys - dyy*dxs;
+	float idet = __fdividef(1.0f, idxx*dxx + idxy*dxy + idxs*dxs);
+	float idyy = dxx*dss - dxs*dxs;
+	float idys = dxy*dxs - dxx*dys;
+	float idss = dxx*dyy - dxy*dxy;
+	float pdx = idet*(idxx*dx + idxy*dy + idxs*ds);
+	float pdy = idet*(idxy*dx + idyy*dy + idys*ds);
+	float pds = idet*(idxs*dx + idys*dy + idss*ds);
+	if (pdx<-0.5f || pdx>0.5f || pdy<-0.5f || pdy>0.5f || pds<-0.5f || pds>0.5f) {
+	  pdx = __fdividef(dx, dxx);
+	  pdy = __fdividef(dy, dyy);
+	  pds = __fdividef(ds, dss);
+	}
+	float dval = 0.5f*(dx*pdx + dy*pdy + ds*pds);
+	int maxPts = d_MaxNumPoints;
+	float sc = powf(2.0f, (float)s/NUM_SCALES) * exp2f(pds*factor);
+	if (sc>=lowestScale) {
+	  atomicMax(&d_PointCounter[2*octave+0], d_PointCounter[2*octave-1]);
+	  unsigned int idx = atomicInc(&d_PointCounter[2*octave+0], 0x7fffffff);
+	  idx = (idx>=maxPts ? maxPts-1 : idx);
+	  d_Sift[idx].xpos = xpos + pdx;
+	  d_Sift[idx].ypos = ypos + pdy;
+	  d_Sift[idx].scale = sc;
+	  d_Sift[idx].sharpness = val + dval;
+	  d_Sift[idx].edgeness = edge;
+	  d_Sift[idx].subsampling = subsampling;
+	}
+      }
+    }
+  }
+}
+
 __global__ void LaplaceMultiTex(cudaTextureObject_t texObj, float *d_Result, int width, int pitch, int height, int octave)
 {
   __shared__ float data1[(LAPLACE_W + 2*LAPLACE_R)*LAPLACE_S];
@@ -2046,3 +2439,16 @@ __global__ void LowPassBlock(float *d_Image, float *d_Result, int width, int pit
 		     k[0]*(xrows[(ly - 4)%N][tx] + xrows[(ly + 4)%N][tx]);
 }
 
+// Point counts on the GPU, for batches (cudaSiftBatch.h). CountPoints writes the number of
+// points that ExtractSift kept, which outside batches is read into siftData.numPts on the
+// host. SetCount writes a count known on the host, when the batch reaches the call that
+// needs it.
+__global__ void CountPoints(const unsigned int *counter, int maxPts, int *count)
+{
+  *count = min((int)*counter, maxPts);
+}
+
+__global__ void SetCount(int *count, int value)
+{
+  *count = value;
+}

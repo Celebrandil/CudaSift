@@ -36,7 +36,9 @@ run() {   # run <tool> <test> <expected summary> [options]; skipped if the test 
   local log="${BIN_DIR}/${tool}_${test}.log"
   echo ""
   echo ">>> ${tool}: ${test}"
-  "${SANITIZER}" --tool "${tool}" "$@" "${BIN_DIR}/${test}" 0 > "${log}" 2>&1
+  local args=0
+  [ "${test}" = test_batch ] && args="0 10"   # shorter frame loops
+  "${SANITIZER}" --tool "${tool}" "$@" "${BIN_DIR}/${test}" ${args} > "${log}" 2>&1
   grep "SUMMARY" "${log}"
   grep -E "\[FAIL\]" "${log}" | sed "s/^/  (test check, ignored)/"
   if ! grep -qE "${clean}" "${log}" || grep -qE "LEAK SUMMARY: [1-9]" "${log}"; then
@@ -44,10 +46,10 @@ run() {   # run <tool> <test> <expected summary> [options]; skipped if the test 
   fi
 }
 
-for test in test_extract test_match test_homography; do
+for test in test_extract test_match test_homography test_homography_gpu test_batch; do
   run memcheck ${test} "ERROR SUMMARY: 0 errors" --leak-check full
 done
-for test in test_extract test_match; do
+for test in test_extract test_match test_homography_gpu test_batch; do
   run racecheck ${test} "RACECHECK SUMMARY: 0 hazards"
 done
 

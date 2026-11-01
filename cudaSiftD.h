@@ -47,17 +47,17 @@
 #define LOWPASS_R       4
 
 //====================== Number of threads ====================//
-// ScaleDown:               SCALEDOWN_W + 4
-// LaplaceMulti:            (LAPLACE_W+2*LAPLACE_R)*LAPLACE_S
-// FindPointsMulti:         MINMAX_W + 2
-// ComputeOrientations:     128
-// ExtractSiftDescriptors:  256
+// LowPassBlock:                 (LOWPASS_W + 2*LOWPASS_R) x 4
+// ScaleDownDirect:              32 x 8
+// LaplaceFindPoints:            FUSED_NT = 288 (cudaSiftD.cu)
+// ComputeOrientationsCONST:     11*11 = 121
+// ExtractSiftDescriptorsGather: 16 x 8 = 128
 
 //====================== Number of blocks ====================//
-// ScaleDown:               (width/SCALEDOWN_W) * (height/SCALEDOWN_H)
-// LaplceMulti:             (width+2*LAPLACE_R)/LAPLACE_W * height
-// FindPointsMulti:         (width/MINMAX_W)*NUM_SCALES * (height/MINMAX_H)
-// ComputeOrientations:     numpts
-// ExtractSiftDescriptors:  numpts
+// LowPassBlock:                 (width/LOWPASS_W) * (height/LOWPASS_H)
+// ScaleDownDirect:              (width/2/32) * (height/2/8)
+// LaplaceFindPoints:            (width/MINMAX_W) * (height/(MINMAX_H*FUSED_FY))
+// ComputeOrientationsCONST:     512, each loops over the points
+// ExtractSiftDescriptorsGather: 512, each loops over the points
 
 #endif

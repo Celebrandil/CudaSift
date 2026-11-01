@@ -1,15 +1,24 @@
 #!/bin/bash
-# Run all benchmarks and tests
+# Run all tests, then the benchmark
+# Usage, from the repository root (the tests read data/):
+#   bash scripts/run_benchmark.sh [build directory, default: build]
 
 set -e
 
+BUILD_DIR="${1:-build}"
+
+if [ ! -f "data/img1.png" ]; then
+  echo "Error: data/img1.png not found. Run this script from the repository root."
+  exit 1
+fi
+
 # Find executable directory
-if [ -d "build/Release" ]; then
-  BIN_DIR="build/Release"
-elif [ -d "build" ]; then
-  BIN_DIR="build"
+if [ -d "${BUILD_DIR}/Release" ]; then
+  BIN_DIR="${BUILD_DIR}/Release"
+elif [ -d "${BUILD_DIR}" ]; then
+  BIN_DIR="${BUILD_DIR}"
 else
-  echo "Error: Build directory not found. Run scripts/build.sh first."
+  echo "Error: Build directory ${BUILD_DIR} not found. Run scripts/build.sh first."
   exit 1
 fi
 
@@ -17,24 +26,16 @@ echo "============================================="
 echo "  CudaSift Test & Benchmark Suite"
 echo "============================================="
 
-# Run tests
-echo ""
-echo ">>> Running extraction tests..."
-echo ""
-"${BIN_DIR}/test_extract" 0
-TEST1=$?
-
-echo ""
-echo ">>> Running matching tests..."
-echo ""
-"${BIN_DIR}/test_match" 0
-TEST2=$?
-
-echo ""
-echo ">>> Running homography tests..."
-echo ""
-"${BIN_DIR}/test_homography" 0
-TEST3=$?
+# Run the tests that were built (not every configuration builds all of them)
+FAILED=""
+for TEST in test_extract test_match test_homography test_homography_gpu; do
+  if [ -x "${BIN_DIR}/${TEST}" ]; then
+    echo ""
+    echo ">>> Running ${TEST}..."
+    echo ""
+    "${BIN_DIR}/${TEST}" 0 || FAILED="${FAILED} ${TEST}"
+  fi
+done
 
 echo ""
 echo ">>> Running performance benchmark..."
@@ -46,9 +47,9 @@ echo "============================================="
 echo "  All Tests & Benchmarks Complete"
 echo "============================================="
 
-TOTAL_FAIL=$((TEST1 + TEST2 + TEST3))
-if [ $TOTAL_FAIL -eq 0 ]; then
+if [ -z "${FAILED}" ]; then
   echo "  All tests PASSED"
 else
-  echo "  Some tests FAILED (exit codes: $TEST1, $TEST2, $TEST3)"
+  echo "  Some tests FAILED:${FAILED}"
+  exit 1
 fi

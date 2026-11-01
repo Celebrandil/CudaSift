@@ -4,6 +4,8 @@
 
 #include <iostream>
 #include <cmath>
+#include <algorithm>
+#include <cstring>
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -393,6 +395,58 @@ void TestImproveHomographyNoInliers()
   FreeSiftData(data);
 }
 
+// Regression test: the managed memory build (MANAGEDMEM) computed the descriptors with another
+// kernel than the default build, summing the histograms with shared memory atomics, so its
+// descriptors changed from run to run. Built in both modes (scripts/check_builds.sh builds this
+// test with USE_MANAGED_MEM=ON): two extractions of the same image give the same points, in any
+// order, and the same descriptors, bit for bit.
+void TestDeterministicDescriptors()
+{
+  std::cout << "\n--- Test: Same descriptors on repeated extractions ---" << std::endl;
+
+  cv::Mat img = cv::imread("data/img1.png", 0);
+  if (img.empty()) return;
+  cv::Mat fimg;
+  img.convertTo(fimg, CV_32FC1);
+  CudaImage cudaImg;
+  cudaImg.Allocate(fimg.cols, fimg.rows, iAlignUp(fimg.cols, 128), false, NULL, (float *)fimg.data);
+  cudaImg.Download();
+
+  SiftData siftData;
+  InitSiftData(siftData, 32768, true, true);
+  float *mem = AllocSiftTempMemory(fimg.cols, fimg.rows, 5, false);
+  std::vector<SiftPoint> runs[2];
+  for (int r = 0; r < 2; r++) {
+    ExtractSift(siftData, cudaImg, 5, 1.0f, 3.0f, 0.0f, false, mem);
+#ifdef MANAGEDMEM
+    SiftPoint *pts = siftData.m_data;
+#else
+    SiftPoint *pts = siftData.h_data;
+#endif
+    runs[r].assign(pts, pts + siftData.numPts);
+    std::sort(runs[r].begin(), runs[r].end(), [](const SiftPoint &a, const SiftPoint &b) {
+      if (a.xpos != b.xpos) return a.xpos < b.xpos;
+      if (a.ypos != b.ypos) return a.ypos < b.ypos;
+      if (a.scale != b.scale) return a.scale < b.scale;
+      if (a.orientation != b.orientation) return a.orientation < b.orientation;
+      return memcmp(a.data, b.data, sizeof(a.data)) < 0;
+    });
+  }
+  FreeSiftTempMemory(mem);
+  FreeSiftData(siftData);
+
+  bool samePoints = (runs[0].size() == runs[1].size() && !runs[0].empty());
+  int sameDescriptors = 0;
+  for (size_t i = 0; samePoints && i < runs[0].size(); i++) {
+    const SiftPoint &a = runs[0][i], &b = runs[1][i];
+    samePoints = (a.xpos == b.xpos && a.ypos == b.ypos && a.scale == b.scale && a.orientation == b.orientation);
+    sameDescriptors += (memcmp(a.data, b.data, sizeof(a.data)) == 0);
+  }
+  std::cout << "    " << runs[0].size() << " points, " << sameDescriptors << " identical descriptors" << std::endl;
+  CHECK(samePoints, "Same points on repeated extractions");
+  CHECK(samePoints && sameDescriptors == (int)runs[0].size(), "Same descriptors on repeated extractions");
+}
+
 int main(int argc, char **argv)
 {
   int devNum = 0;
@@ -412,6 +466,7 @@ int main(int argc, char **argv)
   TestHomographyOrientation();
   TestPGMImages();
   TestImproveHomographyNoInliers();
+  TestDeterministicDescriptors();
 
   std::cout << "\n=============================================" << std::endl;
   std::cout << "  Results: " << testsPassed << " passed, " << testsFailed << " failed" << std::endl;

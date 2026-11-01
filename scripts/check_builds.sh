@@ -4,9 +4,9 @@
 #   scripts/check_builds.sh
 # - CMAKE_CUDA_ARCHITECTURES and CUDAARCHS select the architecture of the local GPU,
 #   and test_extract runs on it.
-# - USE_MANAGED_MEM=ON builds the library, cudasift, benchmark and test_homography
-#   (test_extract, test_match and the examples use SiftData::h_data, which managed
-#   memory replaces with m_data), and test_homography passes.
+# - USE_MANAGED_MEM=ON builds the library, cudasift, benchmark, test_homography and
+#   test_batch (test_extract, test_match and the examples use SiftData::h_data, which
+#   managed memory replaces with m_data), and test_homography and test_batch pass.
 # Skipped, with exit code 0, without nvcc or an NVIDIA GPU. Builds in build-check-*.
 
 NVCC=$(command -v nvcc)
@@ -49,13 +49,15 @@ echo ""
 echo ">>> USE_MANAGED_MEM=ON"
 dir=build-check-managed
 if configure ${dir} -DCMAKE_CUDA_ARCHITECTURES=${ARCH} -DUSE_MANAGED_MEM=ON -DBUILD_EXAMPLES=OFF; then
-  for target in cudasift_lib cudasift benchmark test_homography; do
+  for target in cudasift_lib cudasift benchmark test_homography test_batch; do
     cmake --build ${dir} -j4 --target ${target} >> ${dir}.log 2>&1 || fail "managed-build-${target}"
   done
-  if [ -x ${dir}/test_homography ]; then
-    ${dir}/test_homography 0 > ${dir}/test_homography.log 2>&1 || fail "managed-test_homography"
-    grep "Results" ${dir}/test_homography.log
-  fi
+  for test in test_homography test_batch; do
+    if [ -x ${dir}/${test} ]; then
+      ${dir}/${test} 0 > ${dir}/${test}.log 2>&1 || fail "managed-${test}"
+      grep "Results" ${dir}/${test}.log
+    fi
+  done
 else
   fail "configure-managed"
 fi

@@ -1,6 +1,7 @@
 //********************************************************//
 // CudaSift Performance Benchmark                         //
-// Tests extraction and matching at multiple resolutions  //
+// Extraction, matching and homography estimation at     //
+// multiple resolutions                                   //
 //********************************************************//
 
 #include <iostream>
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <numeric>
 #include <cmath>
+#include <chrono>
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -17,12 +19,16 @@
 #include "cudaImage.h"
 #include "cudaSift.h"
 
+int ImproveHomography(SiftData &data, float *homography, int numLoops, float minScore, float maxAmbiguity, float thresh);
+
 struct BenchResult {
   int width, height;
   int numFeatures;
   double extractTimeMs;
   double matchTimeMs;
   double uploadTimeMs;
+  double homographyTimeMs;      // FindHomography + ImproveHomography
+  double homographyGPUTimeMs;   // FindHomographyGPU + ImproveHomographyGPU
   double totalTimeMs;
 };
 
@@ -114,6 +120,27 @@ BenchResult RunBenchmark(const cv::Mat &srcImg, int targetW, int targetH,
     }
     std::sort(matchTimes.begin(), matchTimes.end());
     result.matchTimeMs = matchTimes[matchTimes.size() / 2];
+
+    // Benchmark homography estimation on the self-match (wall time, since part of
+    // FindHomography and all of ImproveHomography run on the CPU)
+    std::vector<double> homTimes, homGPUTimes;
+    for (int i = 0; i < benchRuns; i++) {
+      float homography[9];
+      int numMatches, numFit;
+      auto t0 = std::chrono::steady_clock::now();
+      FindHomography(siftData, homography, &numMatches, 10000, 0.00f, 0.80f, 5.0f);
+      ImproveHomography(siftData, homography, 5, 0.00f, 0.80f, 3.0f);
+      auto t1 = std::chrono::steady_clock::now();
+      FindHomographyGPU(siftData, homography, &numMatches, 10000, 0.00f, 0.80f, 5.0f, i);
+      ImproveHomographyGPU(siftData, homography, &numFit, 5, 0.00f, 0.80f, 3.0f);
+      auto t2 = std::chrono::steady_clock::now();
+      homTimes.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+      homGPUTimes.push_back(std::chrono::duration<double, std::milli>(t2 - t1).count());
+    }
+    std::sort(homTimes.begin(), homTimes.end());
+    std::sort(homGPUTimes.begin(), homGPUTimes.end());
+    result.homographyTimeMs = homTimes[homTimes.size() / 2];
+    result.homographyGPUTimeMs = homGPUTimes[homGPUTimes.size() / 2];
   }
 
   result.totalTimeMs = result.uploadTimeMs + result.extractTimeMs + result.matchTimeMs;
@@ -180,7 +207,7 @@ int main(int argc, char **argv)
   std::vector<BenchResult> results;
 
   std::cout << "\nRunning benchmarks..." << std::endl;
-  std::cout << std::string(95, '-') << std::endl;
+  std::cout << std::string(119, '-') << std::endl;
   std::cout << std::setw(10) << "Resolution"
             << std::setw(12) << "Size"
             << std::setw(10) << "Features"
@@ -188,8 +215,10 @@ int main(int argc, char **argv)
             << std::setw(14) << "Extract(ms)"
             << std::setw(12) << "Match(ms)"
             << std::setw(12) << "Total(ms)"
-            << std::setw(10) << "FPS" << std::endl;
-  std::cout << std::string(95, '-') << std::endl;
+            << std::setw(10) << "FPS"
+            << std::setw(12) << "Homog(ms)"
+            << std::setw(12) << "HomGPU(ms)" << std::endl;
+  std::cout << std::string(119, '-') << std::endl;
 
   for (auto &res : resolutions) {
     auto r = RunBenchmark(srcImg, res.w, res.h, numOctaves, thresh, warmupRuns, benchRuns);
@@ -206,10 +235,12 @@ int main(int argc, char **argv)
               << std::setw(12) << r.matchTimeMs
               << std::setw(12) << r.totalTimeMs
               << std::setw(10) << std::setprecision(1) << 1000.0 / r.totalTimeMs
+              << std::setw(12) << std::setprecision(2) << r.homographyTimeMs
+              << std::setw(12) << r.homographyGPUTimeMs
               << std::endl;
   }
 
-  std::cout << std::string(95, '-') << std::endl;
+  std::cout << std::string(119, '-') << std::endl;
 
   // Multi-octave comparison
   std::cout << "\n=== Octave Count Comparison (1080p) ===" << std::endl;
@@ -304,8 +335,8 @@ int main(int argc, char **argv)
   std::cout << "\n=============================================" << std::endl;
   std::cout << "  RESULTS (Markdown table for README)" << std::endl;
   std::cout << "=============================================" << std::endl;
-  std::cout << "\n| Resolution | Features | Extract (ms) | Match (ms) | Total (ms) | FPS |" << std::endl;
-  std::cout << "|------------|----------|-------------|------------|------------|-----|" << std::endl;
+  std::cout << "\n| Resolution | Features | Extract (ms) | Match (ms) | Total (ms) | FPS | Homography (ms) | GPU homography (ms) |" << std::endl;
+  std::cout << "|------------|----------|-------------|------------|------------|-----|-----------------|---------------------|" << std::endl;
   for (size_t i = 0; i < results.size(); i++) {
     auto &r = results[i];
     std::cout << "| " << std::setw(10) << std::left << resolutions[i].name
@@ -314,9 +345,13 @@ int main(int argc, char **argv)
               << " | " << std::setw(10) << r.matchTimeMs
               << " | " << std::setw(10) << r.totalTimeMs
               << " | " << std::setw(3) << std::setprecision(0) << 1000.0 / r.totalTimeMs
+              << " | " << std::setw(15) << std::setprecision(2) << r.homographyTimeMs
+              << " | " << std::setw(19) << r.homographyGPUTimeMs
               << " |" << std::endl;
   }
 
+  std::cout << "\nTotal: upload + extraction + matching. Homography: FindHomography + ImproveHomography;"
+            << "\nGPU homography: FindHomographyGPU + ImproveHomographyGPU (10000 hypotheses, 5 iterations, on the self-match)." << std::endl;
   std::cout << "\nBenchmark complete!" << std::endl;
   return 0;
 }

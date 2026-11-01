@@ -7,13 +7,18 @@
 #include <cmath>
 #include <iostream>
 #include <algorithm>
+#include <map>
 #include <mutex>
+#include <set>
+#include <thread>
+#include <vector>
 #include "cudautils.h"
 
 #include "cudaImage.h"
 #include "cudaSift.h"
 #include "cudaSiftD.h"
 #include "cudaSiftH.h"
+#include "cudaSiftBatch.h"
 
 #include "cudaSiftD.cu"
 
@@ -25,6 +30,8 @@ struct DeviceState {
   std::mutex lock;
   float scaleDownVariance = -1.0f;   // last upload to d_ScaleDownKernel
   float lowPassScale = -1.0f;        // last upload to d_LowPassKernel
+  int maxPts = -1;                   // last upload to d_MaxNumPoints
+  int numOctaves = -1;               // last upload to d_LaplaceKernel
 };
 
 static DeviceState &CurrentDeviceState()
@@ -37,6 +44,183 @@ static DeviceState &CurrentDeviceState()
     exit(EXIT_FAILURE);
   }
   return states[device];
+}
+
+// Batches (cudaSiftBatch.h). A batch is the calls made between BeginSiftBatch and
+// EndSiftBatch by one thread, on one device: their kernels are launched in order on the
+// default stream, without waiting; the work they do on the host after their GPU work is
+// deferred until the batch has completed (AfterBatch), in WaitSiftBatch or in the next call
+// outside a batch. Calls from other threads are not part of it: they run as usual, after the
+// work of the batch already launched (the default stream is in order), and complete a
+// submitted batch first. One batch at a time.
+struct BatchState {
+  std::mutex lock;                      // protects counts (SiftData can be freed from any thread)
+  std::mutex completion;                // protects submitted and pending: a batch is completed once
+  bool open = false;                    // between BeginSiftBatch and EndSiftBatch
+  std::thread::id owner;                // the thread of the open batch
+  bool submitted = false;               // ended, not completed yet
+  unsigned int id = 0;
+  int device = -1;
+  cudaEvent_t start = NULL, stop = NULL;   // GPU time of the batch, recorded on its device
+  double time = 0.0;                    // GPU time of the last completed batch
+  std::vector<std::function<void()>> pending;
+  // SiftData extracted in the open batch (their count is on the GPU), and the point count on
+  // the GPU of each SiftData, both keyed by the device points of the SiftData
+  std::set<const void *> extracted;
+  std::map<const void *, int *> counts;
+};
+
+static BatchState &Batch()
+{
+  static BatchState batch;
+  return batch;
+}
+
+static void BatchFail(const char *msg)
+{
+  fprintf(stderr, "CudaSift: %s\n", msg);
+  exit(EXIT_FAILURE);
+}
+
+bool InBatch()
+{
+  BatchState &b = Batch();
+  if (b.open && b.owner==std::this_thread::get_id()) {
+    int device;
+    safeCall(cudaGetDevice(&device));
+    if (device!=b.device)
+      BatchFail("the calls of a batch must be made on the device of BeginSiftBatch");
+  }
+  return b.open && b.owner==std::this_thread::get_id();
+}
+
+unsigned int BatchId()
+{
+  return Batch().id;
+}
+
+void AfterBatch(std::function<void()> f)
+{
+  BatchState &b = Batch();
+  std::lock_guard<std::mutex> lock(b.completion);
+  b.pending.push_back(f);
+}
+
+void CompleteBatch()
+{
+  BatchState &b = Batch();
+  std::lock_guard<std::mutex> lock(b.completion);
+  if (!b.submitted)
+    return;
+  b.submitted = false;
+  int device;
+  safeCall(cudaGetDevice(&device));
+  safeCall(cudaSetDevice(b.device));
+  safeCall(cudaEventSynchronize(b.stop));
+  float ms = 0.0f;
+  safeCall(cudaEventElapsedTime(&ms, b.start, b.stop));
+  b.time = ms;
+  std::vector<std::function<void()>> pending;
+  pending.swap(b.pending);
+  for (auto &f : pending)
+    f();
+  safeCall(cudaSetDevice(device));
+}
+
+SiftPoint *DevicePoints(SiftData &data)
+{
+#ifdef MANAGEDMEM
+  return data.m_data;
+#else
+  return data.d_data;
+#endif
+}
+
+// The point count of a SiftData on the GPU, allocated on first use (freed by FreeSiftData)
+static int *DeviceCount(SiftData &data)
+{
+  BatchState &b = Batch();
+  std::lock_guard<std::mutex> lock(b.lock);
+  int *&count = b.counts[DevicePoints(data)];
+  if (count==NULL)
+    safeCall(cudaMalloc((void **)&count, sizeof(int)));
+  return count;
+}
+
+int *BatchCount(SiftData &data)
+{
+  int *count = DeviceCount(data);
+  if (!Batch().extracted.count(DevicePoints(data)))
+    SetCount<<<1, 1>>>(count, data.numPts);   // written when the batch reaches this call
+  return count;
+}
+
+static void FreeDeviceCount(SiftData &data)
+{
+  BatchState &b = Batch();
+  int *count = NULL;
+  {
+    std::lock_guard<std::mutex> lock(b.lock);
+    auto it = b.counts.find(DevicePoints(data));
+    if (it==b.counts.end())
+      return;
+    count = it->second;
+    b.counts.erase(it);
+  }
+  safeCall(cudaFree(count));
+}
+
+void BeginSiftBatch()
+{
+  BatchState &b = Batch();
+  if (b.open)
+    BatchFail("BeginSiftBatch: a batch is already open (one batch at a time)");
+  // The previous batch must complete first: batches share the counters and scratch memory
+  CompleteBatch();
+  int device;
+  safeCall(cudaGetDevice(&device));
+  if (device!=b.device) {
+    if (b.start!=NULL) {
+      safeCall(cudaSetDevice(b.device));
+      safeCall(cudaEventDestroy(b.start));
+      safeCall(cudaEventDestroy(b.stop));
+      safeCall(cudaSetDevice(device));
+    }
+    safeCall(cudaEventCreate(&b.start));
+    safeCall(cudaEventCreate(&b.stop));
+    b.device = device;
+  }
+  safeCall(cudaEventRecord(b.start, 0));
+  b.extracted.clear();
+  b.id++;
+  b.owner = std::this_thread::get_id();
+  b.open = true;
+}
+
+void EndSiftBatch()
+{
+  BatchState &b = Batch();
+  if (!InBatch())
+    BatchFail("EndSiftBatch: no open batch (in this thread)");
+  int device;
+  safeCall(cudaGetDevice(&device));
+  safeCall(cudaSetDevice(b.device));
+  safeCall(cudaEventRecord(b.stop, 0));
+  safeCall(cudaSetDevice(device));
+  std::lock_guard<std::mutex> lock(b.completion);
+  b.open = false;
+  b.submitted = true;
+}
+
+double WaitSiftBatch()
+{
+  BatchState &b = Batch();
+  if (InBatch())
+    EndSiftBatch();
+  CompleteBatch();   // (a call made after EndSiftBatch may have completed it already)
+  double time = b.time;
+  b.time = 0.0;
+  return time;
 }
 
 void InitCuda(int devNum)
@@ -83,27 +267,34 @@ static int LimitOctaves(int width, int height, int numOctaves, bool scaleUp)
   return num;
 }
 
-float *AllocSiftTempMemory(int width, int height, int numOctaves, bool scaleUp)
+// Temporary memory of ExtractSift, in floats: sizeTmp floats at the start (the upsampled
+// image with scaleUp), then the low-pass filtered image and the downsampled octaves.
+// LaplaceFindPoints keeps the DoG layers in shared memory.
+static int TempMemorySize(int width, int height, int numOctaves, bool scaleUp, int &sizeTmp)
 {
-  TimerGPU timer(0);
-  numOctaves = CheckNumOctaves(numOctaves);
-  numOctaves = LimitOctaves(width, height, numOctaves, scaleUp);
-  const int nd = NUM_SCALES + 3;
-  int w = width*(scaleUp ? 2 : 1); 
+  int w = width*(scaleUp ? 2 : 1);
   int h = height*(scaleUp ? 2 : 1);
   int p = iAlignUp(w, 128);
   int size = h*p;                 // image sizes
-  int sizeTmp = nd*h*p;           // laplace buffer sizes
+  sizeTmp = (scaleUp ? h*p : 0);  // upsampled image
   for (int i=0;i<numOctaves;i++) {
     w /= 2;
     h /= 2;
     int p = iAlignUp(w, 128);
     size += h*p;
-    sizeTmp += nd*h*p; 
   }
+  return size + sizeTmp;
+}
+
+float *AllocSiftTempMemory(int width, int height, int numOctaves, bool scaleUp)
+{
+  TimerGPU timer(0);
+  numOctaves = CheckNumOctaves(numOctaves);
+  numOctaves = LimitOctaves(width, height, numOctaves, scaleUp);
+  int sizeTmp;
+  int size = TempMemorySize(width, height, numOctaves, scaleUp, sizeTmp);
   float *memoryTmp = NULL; 
   size_t pitch;
-  size += sizeTmp;
   safeCall(cudaMallocPitch((void **)&memoryTmp, &pitch, (size_t)4096, (size+4095)/4096*sizeof(float)));
 #ifdef VERBOSE
   printf("Allocated memory size: %d bytes\n", size);
@@ -118,33 +309,47 @@ void FreeSiftTempMemory(float *memoryTmp)
     safeCall(cudaFree(memoryTmp));
 }
 
+// The number of points kept by ExtractSift. Outside batches, it is read into siftData.numPts,
+// and NULL is returned. In a batch, it is written to the point count of siftData on the GPU,
+// which is returned.
+static int *CountExtractedPoints(SiftData &siftData, unsigned int *d_counter, bool batched)
+{
+  if (batched) {
+    int *count = DeviceCount(siftData);
+    Batch().extracted.insert(DevicePoints(siftData));
+    CountPoints<<<1, 1>>>(d_counter, siftData.maxPts, count);
+    return count;
+  }
+  safeCall(cudaMemcpy(&siftData.numPts, d_counter, sizeof(int), cudaMemcpyDeviceToHost)); 
+  siftData.numPts = (siftData.numPts<siftData.maxPts ? siftData.numPts : siftData.maxPts);
+  return NULL;
+}
+
 void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double initBlur, float thresh, float lowestScale, bool scaleUp, float *tempMemory) 
 {
-  std::lock_guard<std::mutex> lock(CurrentDeviceState().lock);
+  const bool batched = InBatch();
+  if (!batched)
+    CompleteBatch();
+  DeviceState &state = CurrentDeviceState();
+  std::lock_guard<std::mutex> lock(state.lock);
   TimerGPU timer(0);
   numOctaves = CheckNumOctaves(numOctaves);
   numOctaves = LimitOctaves(img.width, img.height, numOctaves, scaleUp);
   unsigned int *d_PointCounterAddr;
   safeCall(cudaGetSymbolAddress((void**)&d_PointCounterAddr, d_PointCounter));
   safeCall(cudaMemset(d_PointCounterAddr, 0, ((MAX_OCTAVES+1)*2+1)*sizeof(int)));
-  safeCall(cudaMemcpyToSymbol(d_MaxNumPoints, &siftData.maxPts, sizeof(int)));
+  // Constant memory uploads are synchronous; skip them when nothing changed
+  if (siftData.maxPts!=state.maxPts)
+    safeCall(cudaMemcpyToSymbol(d_MaxNumPoints, &siftData.maxPts, sizeof(int)));
+  bool newKernels = (numOctaves!=state.numOctaves);
+  state.maxPts = siftData.maxPts;
+  state.numOctaves = numOctaves;
 
-  const int nd = NUM_SCALES + 3;
-  int w = img.width*(scaleUp ? 2 : 1);
-  int h = img.height*(scaleUp ? 2 : 1);
-  int p = iAlignUp(w, 128);
-  int width = w, height = h;
-  int size = h*p;                 // image sizes
-  int sizeTmp = nd*h*p;           // laplace buffer sizes
-  for (int i=0;i<numOctaves;i++) {
-    w /= 2;
-    h /= 2;
-    int p = iAlignUp(w, 128);
-    size += h*p;
-    sizeTmp += nd*h*p; 
-  }
+  int width = img.width*(scaleUp ? 2 : 1);
+  int height = img.height*(scaleUp ? 2 : 1);
+  int sizeTmp;
+  int size = TempMemorySize(img.width, img.height, numOctaves, scaleUp, sizeTmp);
   float *memoryTmp = tempMemory; 
-  size += sizeTmp;
   if (!tempMemory) {
     size_t pitch;
     safeCall(cudaMallocPitch((void **)&memoryTmp, &pitch, (size_t)4096, (size+4095)/4096*sizeof(float)));
@@ -157,31 +362,50 @@ void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double init
 
   CudaImage lowImg;
   lowImg.Allocate(width, height, iAlignUp(width, 128), false, memorySub);
+  int *d_count = NULL;   // the point count on the GPU, in a batch
   if (!scaleUp) {
-    float kernel[(MAX_OCTAVES+1)*12*16];
-    PrepareLaplaceKernels(numOctaves, 0.0f, kernel);
-    safeCall(cudaMemcpyToSymbolAsync(d_LaplaceKernel, kernel, (MAX_OCTAVES+1)*12*16*sizeof(float)));
+    if (newKernels) {
+      float kernel[(MAX_OCTAVES+1)*12*16];
+      PrepareLaplaceKernels(numOctaves, 0.0f, kernel);
+      safeCall(cudaMemcpyToSymbolAsync(d_LaplaceKernel, kernel, (MAX_OCTAVES+1)*12*16*sizeof(float)));
+    }
     LowPass(lowImg, img, max(initBlur, 0.001f));
     TimerGPU timer1(0);
     ExtractSiftLoop(siftData, lowImg, numOctaves, 0.0f, thresh, lowestScale, 1.0f, memoryTmp, memorySub + height*iAlignUp(width, 128));
-    safeCall(cudaMemcpy(&siftData.numPts, &d_PointCounterAddr[2*numOctaves], sizeof(int), cudaMemcpyDeviceToHost)); 
-    siftData.numPts = (siftData.numPts<siftData.maxPts ? siftData.numPts : siftData.maxPts);
-    printf("SIFT extraction time =        %.2f ms %d\n", timer1.read(), siftData.numPts);
+    d_count = CountExtractedPoints(siftData, &d_PointCounterAddr[2*numOctaves], batched);
+    if (!batched)
+      printf("SIFT extraction time =        %.2f ms %d\n", timer1.read(), siftData.numPts);
   } else {
     CudaImage upImg;
     upImg.Allocate(width, height, iAlignUp(width, 128), false, memoryTmp);
     TimerGPU timer1(0); 
     ScaleUp(upImg, img);
     LowPass(lowImg, upImg, max(initBlur, 0.001f));
-    float kernel[(MAX_OCTAVES+1)*12*16];
-    PrepareLaplaceKernels(numOctaves, 0.0f, kernel);
-    safeCall(cudaMemcpyToSymbolAsync(d_LaplaceKernel, kernel, (MAX_OCTAVES+1)*12*16*sizeof(float)));
+    if (newKernels) {
+      float kernel[(MAX_OCTAVES+1)*12*16];
+      PrepareLaplaceKernels(numOctaves, 0.0f, kernel);
+      safeCall(cudaMemcpyToSymbolAsync(d_LaplaceKernel, kernel, (MAX_OCTAVES+1)*12*16*sizeof(float)));
+    }
     ExtractSiftLoop(siftData, lowImg, numOctaves, 0.0f, thresh, lowestScale*2.0f, 1.0f, memoryTmp, memorySub + height*iAlignUp(width, 128));
-    safeCall(cudaMemcpy(&siftData.numPts, &d_PointCounterAddr[2*numOctaves], sizeof(int), cudaMemcpyDeviceToHost)); 
-    siftData.numPts = (siftData.numPts<siftData.maxPts ? siftData.numPts : siftData.maxPts);
-    RescalePositions(siftData, 0.5f);
-    printf("SIFT extraction time =        %.2f ms\n", timer1.read());
+    d_count = CountExtractedPoints(siftData, &d_PointCounterAddr[2*numOctaves], batched);
+    RescalePositions(siftData, 0.5f, d_count);
+    if (!batched)
+      printf("SIFT extraction time =        %.2f ms\n", timer1.read());
   } 
+  if (batched) {   // in a batch, the rest is done once the batch has completed
+    SiftData *data = &siftData;
+    float *memoryFree = (tempMemory ? NULL : memoryTmp);
+    AfterBatch([=]() {
+      safeCall(cudaMemcpy(&data->numPts, d_count, sizeof(int), cudaMemcpyDeviceToHost));
+#ifndef MANAGEDMEM
+      if (data->h_data && data->numPts>0)
+        safeCall(cudaMemcpy(data->h_data, data->d_data, sizeof(SiftPoint)*data->numPts, cudaMemcpyDeviceToHost));
+#endif
+      if (memoryFree)
+        safeCall(cudaFree(memoryFree));
+    });
+    return;
+  }
   
   if (!tempMemory)
     safeCall(cudaFree(memoryTmp));
@@ -210,7 +434,7 @@ int ExtractSiftLoop(SiftData &siftData, CudaImage &img, int numOctaves, double i
     float totInitBlur = (float)sqrt(initBlur*initBlur + 0.5f*0.5f) / 2.0f;
     ExtractSiftLoop(siftData, subImg, numOctaves-1, totInitBlur, thresh, lowestScale, subsampling*2.0f, memoryTmp, memorySub + (h/2)*p);
   }
-  ExtractSiftOctave(siftData, img, numOctaves, thresh, lowestScale, subsampling, memoryTmp);
+  ExtractSiftOctave(siftData, img, numOctaves, thresh, lowestScale, subsampling);
 #ifdef VERBOSE
   double totTime = timer.read();
   printf("ExtractSift time total =      %.2f ms %d\n\n", totTime, numOctaves);
@@ -218,9 +442,8 @@ int ExtractSiftLoop(SiftData &siftData, CudaImage &img, int numOctaves, double i
   return 0;
 }
 
-void ExtractSiftOctave(SiftData &siftData, CudaImage &img, int octave, float thresh, float lowestScale, float subsampling, float *memoryTmp)
+void ExtractSiftOctave(SiftData &siftData, CudaImage &img, int octave, float thresh, float lowestScale, float subsampling)
 {
-  const int nd = NUM_SCALES + 3;
 #ifdef VERBOSE
   unsigned int *d_PointCounterAddr;
   safeCall(cudaGetSymbolAddress((void**)&d_PointCounterAddr, d_PointCounter));
@@ -228,13 +451,6 @@ void ExtractSiftOctave(SiftData &siftData, CudaImage &img, int octave, float thr
   safeCall(cudaMemcpy(&fstPts, &d_PointCounterAddr[2*octave-1], sizeof(int), cudaMemcpyDeviceToHost)); 
   TimerGPU timer0;
 #endif
-  CudaImage diffImg[nd];
-  int w = img.width; 
-  int h = img.height;
-  int p = iAlignUp(w, 128);
-  for (int i=0;i<nd-1;i++) 
-    diffImg[i].Allocate(w, h, p, false, memoryTmp + i*p*h); 
-
   // Specify texture
   struct cudaResourceDesc resDesc;
   memset(&resDesc, 0, sizeof(resDesc));
@@ -261,8 +477,7 @@ void ExtractSiftOctave(SiftData &siftData, CudaImage &img, int octave, float thr
 #endif
   float baseBlur = pow(2.0f, -1.0f/NUM_SCALES);
   float diffScale = pow(2.0f, 1.0f/NUM_SCALES);
-  LaplaceMulti(texObj, img, diffImg, octave); 
-  FindPointsMulti(diffImg, siftData, thresh, 10.0f, 1.0f/NUM_SCALES, lowestScale/subsampling, subsampling, octave);
+  LaplaceFindPoints(img, siftData, thresh, 10.0f, 1.0f/NUM_SCALES, lowestScale/subsampling, subsampling, octave);
 #ifdef VERBOSE
   double gpuTimeDoG = timer1.read();
   TimerGPU timer4;
@@ -293,7 +508,7 @@ void InitSiftData(SiftData &data, int num, bool host, bool dev)
 #else
   data.h_data = NULL;
   if (host)
-    data.h_data = (SiftPoint *)malloc(sz);
+    safeCall(cudaMallocHost((void **)&data.h_data, sz)); // pinned: much faster device-to-host copies
   data.d_data = NULL;
   if (dev)
     safeCall(cudaMalloc((void **)&data.d_data, sz));
@@ -302,6 +517,7 @@ void InitSiftData(SiftData &data, int num, bool host, bool dev)
 
 void FreeSiftData(SiftData &data)
 {
+  FreeDeviceCount(data);
 #ifdef MANAGEDMEM
   safeCall(cudaFree(data.m_data));
   data.m_data = NULL;
@@ -309,8 +525,16 @@ void FreeSiftData(SiftData &data)
   if (data.d_data!=NULL)
     safeCall(cudaFree(data.d_data));
   data.d_data = NULL;
-  if (data.h_data!=NULL)
-    free(data.h_data);
+  if (data.h_data!=NULL) {
+    // Pinned if allocated by InitSiftData or PrintSiftData, else allocated by the caller with malloc
+    cudaPointerAttributes attr;
+    if (cudaPointerGetAttributes(&attr, data.h_data)==cudaSuccess && attr.type==cudaMemoryTypeHost)
+      safeCall(cudaFreeHost(data.h_data));
+    else {
+      cudaGetLastError();   // clear the error of cudaPointerGetAttributes, if any
+      free(data.h_data);
+    }
+  }
   data.h_data = NULL;
 #endif
   data.numPts = 0;
@@ -324,7 +548,7 @@ void PrintSiftData(SiftData &data)
 #else
   SiftPoint *h_data = data.h_data;
   if (data.h_data==NULL) {
-    h_data = (SiftPoint *)malloc(sizeof(SiftPoint)*data.maxPts);
+    safeCall(cudaMallocHost((void **)&h_data, sizeof(SiftPoint)*data.maxPts));   // freed by FreeSiftData
     safeCall(cudaMemcpy(h_data, data.d_data, sizeof(SiftPoint)*data.numPts, cudaMemcpyDeviceToHost));
     data.h_data = h_data;
   }
@@ -355,6 +579,42 @@ void PrintSiftData(SiftData &data)
   printf("Number of allocated points: %d\n", data.maxPts);
 }
 
+// SortSiftData's order: position, then scale, orientation and descriptor
+static bool SiftPointLess(const SiftPoint &a, const SiftPoint &b)
+{
+  if (a.xpos!=b.xpos) return a.xpos<b.xpos;
+  if (a.ypos!=b.ypos) return a.ypos<b.ypos;
+  if (a.scale!=b.scale) return a.scale<b.scale;
+  if (a.orientation!=b.orientation) return a.orientation<b.orientation;
+  return memcmp(a.data, b.data, sizeof(a.data))<0;
+}
+
+void SortSiftData(SiftData &data)
+{
+  if (InBatch())
+    BatchFail("SortSiftData cannot be called in a batch (BeginSiftBatch)");
+  CompleteBatch();
+  if (data.numPts<=1)
+    return;
+#ifdef MANAGEDMEM
+  safeCall(cudaDeviceSynchronize());
+  std::sort(data.m_data, data.m_data + data.numPts, SiftPointLess);
+#else
+  // Sorted on the host, from the device copy, which the other functions read
+  std::vector<SiftPoint> copy;
+  SiftPoint *h_data = data.h_data;
+  if (h_data==NULL) {
+    copy.resize(data.numPts);
+    h_data = copy.data();
+  }
+  if (data.d_data)
+    safeCall(cudaMemcpy(h_data, data.d_data, sizeof(SiftPoint)*data.numPts, cudaMemcpyDeviceToHost));
+  std::sort(h_data, h_data + data.numPts, SiftPointLess);
+  if (data.d_data)
+    safeCall(cudaMemcpy(data.d_data, h_data, sizeof(SiftPoint)*data.numPts, cudaMemcpyHostToDevice));
+#endif
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Host side master functions
 ///////////////////////////////////////////////////////////////////////////////
@@ -382,10 +642,14 @@ double ScaleDown(CudaImage &res, CudaImage &src, float variance)
   dim3 blocks(iDivUp(src.width, SCALEDOWN_W), iDivUp(src.height, SCALEDOWN_H));
   dim3 threads(SCALEDOWN_W + 4, SCALEDOWN_H + 4);
   ScaleDownDenseShift<<<blocks, threads>>>(res.d_data, src.d_data, src.width, src.pitch, src.height, res.pitch);
-#else
+#elif 0
   dim3 blocks(iDivUp(src.width, SCALEDOWN_W), iDivUp(src.height, SCALEDOWN_H));
   dim3 threads(SCALEDOWN_W + 4);
   ScaleDown<<<blocks, threads>>>(res.d_data, src.d_data, src.width, src.pitch, src.height, res.pitch);
+#else
+  dim3 blocks(iDivUp(src.width/2, 32), iDivUp(src.height/2, 8));
+  dim3 threads(32, 8);
+  ScaleDownDirect<<<blocks, threads>>>(res.d_data, src.d_data, src.width, src.pitch, src.height, res.pitch);
 #endif
   checkMsg("ScaleDown() execution failed\n");
   return 0.0;
@@ -428,9 +692,9 @@ double ExtractSiftDescriptors(cudaTextureObject_t texObj, SiftData &siftData, fl
   dim3 blocks(512); 
   dim3 threads(16, 8);
 #ifdef MANAGEDMEM
-  ExtractSiftDescriptorsCONST<<<blocks, threads>>>(texObj, siftData.m_data, subsampling, octave);
+  ExtractSiftDescriptorsGather<<<blocks, threads>>>(texObj, siftData.m_data, subsampling, octave);
 #else
-  ExtractSiftDescriptorsCONSTNew<<<blocks, threads>>>(texObj, siftData.d_data, subsampling, octave);
+  ExtractSiftDescriptorsGather<<<blocks, threads>>>(texObj, siftData.d_data, subsampling, octave);
 #endif
   checkMsg("ExtractSiftDescriptors() execution failed\n");
   return 0.0; 
@@ -449,16 +713,18 @@ double OrientAndExtract(cudaTextureObject_t texObj, SiftData &siftData, float su
   return 0.0;
 }
 
-double RescalePositions(SiftData &siftData, float scale)
+double RescalePositions(SiftData &siftData, float scale, const int *d_numPts)
 {
-  if (siftData.numPts<=0)   // a launch with 0 blocks is an error
+  // In a batch, the grid covers maxPts, and the kernel stops at the count on the GPU
+  const int numPts = (d_numPts ? siftData.maxPts : siftData.numPts);
+  if (numPts<=0)   // a launch with 0 blocks is an error
     return 0.0;
-  dim3 blocks(iDivUp(siftData.numPts, 64));
+  dim3 blocks(iDivUp(numPts, 64));
   dim3 threads(64);
 #ifdef MANAGEDMEM
-  RescalePositions<<<blocks, threads>>>(siftData.m_data, siftData.numPts, scale);
+  RescalePositions<<<blocks, threads>>>(siftData.m_data, siftData.numPts, scale, d_numPts);
 #else
-  RescalePositions<<<blocks, threads>>>(siftData.d_data, siftData.numPts, scale);
+  RescalePositions<<<blocks, threads>>>(siftData.d_data, siftData.numPts, scale, d_numPts);
 #endif
   checkMsg("RescapePositions() execution failed\n");
   return 0.0; 
@@ -544,6 +810,23 @@ double LaplaceMulti(cudaTextureObject_t texObj, CudaImage &baseImage, CudaImage 
 #endif
   checkMsg("LaplaceMulti() execution failed\n");
   return 0.0; 
+}
+
+double LaplaceFindPoints(CudaImage &img, SiftData &siftData, float thresh, float edgeLimit, float factor, float lowestScale, float subsampling, int octave)
+{
+  if (img.d_data==NULL) {
+    printf("LaplaceFindPoints: missing data\n");
+    return 0.0;
+  }
+  dim3 blocks(iDivUp(img.width, MINMAX_W), iDivUp(img.height, MINMAX_H*FUSED_FY));
+  dim3 threads(FUSED_NT);
+#ifdef MANAGEDMEM
+  LaplaceFindPoints<<<blocks, threads>>>(img.d_data, siftData.m_data, img.width, img.pitch, img.height, subsampling, lowestScale, thresh, factor, edgeLimit, octave);
+#else
+  LaplaceFindPoints<<<blocks, threads>>>(img.d_data, siftData.d_data, img.width, img.pitch, img.height, subsampling, lowestScale, thresh, factor, edgeLimit, octave);
+#endif
+  checkMsg("LaplaceFindPoints() execution failed\n");
+  return 0.0;
 }
 
 double FindPointsMulti(CudaImage *sources, SiftData &siftData, float thresh, float edgeLimit, float factor, float lowestScale, float subsampling, int octave)
