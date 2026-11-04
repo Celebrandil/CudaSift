@@ -29,6 +29,7 @@
 #define cudaDeviceSynchronize  hipDeviceSynchronize
 
 // ---- Device management ----
+#define cudaGetDevice            hipGetDevice
 #define cudaGetDeviceCount       hipGetDeviceCount
 #define cudaGetDeviceProperties  hipGetDeviceProperties
 #define cudaSetDevice            hipSetDevice
@@ -72,6 +73,7 @@
 // cudaMemcpyToArray is deprecated and removed from current HIP; uses are
 // written as cudaMemcpy2DToArray instead (see cudaImage.cu).
 #define cudaMemcpy2DToArray    hipMemcpy2DToArray
+#define cudaMemcpy2DFromArray  hipMemcpy2DFromArray
 
 // ---- Texture objects ----
 #define cudaTextureObject_t       hipTextureObject_t
