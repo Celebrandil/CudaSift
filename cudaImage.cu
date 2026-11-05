@@ -102,10 +102,10 @@ double CudaImage::CopyToTexture(CudaImage &dst, bool host)
     return 0.0;
   }
   TimerGPU timer(0);
-  if (host)
-    safeCall(cudaMemcpyToArray((cudaArray *)dst.t_data, 0, 0, h_data, sizeof(float)*pitch*dst.height, cudaMemcpyHostToDevice));
+  if (host)   // h_data rows are width floats (see Download)
+    safeCall(cudaMemcpy2DToArray((cudaArray *)dst.t_data, 0, 0, h_data, sizeof(float)*width, sizeof(float)*width, dst.height, cudaMemcpyHostToDevice));
   else
-    safeCall(cudaMemcpyToArray((cudaArray *)dst.t_data, 0, 0, d_data, sizeof(float)*pitch*dst.height, cudaMemcpyDeviceToDevice));
+    safeCall(cudaMemcpy2DToArray((cudaArray *)dst.t_data, 0, 0, d_data, sizeof(float)*pitch, sizeof(float)*pitch, dst.height, cudaMemcpyDeviceToDevice));
   safeCall(cudaDeviceSynchronize());
   double gpuTime = timer.read();
 #ifdef VERBOSE

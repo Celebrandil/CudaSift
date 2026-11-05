@@ -42,8 +42,8 @@ __global__ void MatchSiftPoints2(SiftPoint *sift1, SiftPoint *sift2, float *corr
   __shared__ float siftPoints2[16*128];
   const int tx = threadIdx.x;
   const int ty = threadIdx.y;
-  const float *ptr1 = sift1[min(numPts1-1,blockIdx.x*16 + ty)].data;
-  const float *ptr2 = sift2[min(numPts2-1,blockIdx.y*16 + ty)].data;
+  const float *ptr1 = sift1[(int)min(numPts1-1,(int)(blockIdx.x*16 + ty))].data;
+  const float *ptr2 = sift2[(int)min(numPts2-1,(int)(blockIdx.y*16 + ty))].data;
   for (int i=0;i<8;i++) {
     siftPoints1[128*ty+16*i+tx] = ptr1[16*i+tx];
     siftPoints2[128*ty+16*i+tx] = ptr2[16*i+tx];
