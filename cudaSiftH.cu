@@ -111,7 +111,7 @@ void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double init
     float kernel[8*12*16];
     PrepareLaplaceKernels(numOctaves, 0.0f, kernel);
     safeCall(cudaMemcpyToSymbolAsync(d_LaplaceKernel, kernel, 8*12*16*sizeof(float), 0, cudaMemcpyHostToDevice));
-    LowPass(lowImg, img, max(initBlur, 0.001f));
+    LowPass(lowImg, img, fmax(initBlur, 0.001f));
     TimerGPU timer1(0);
     ExtractSiftLoop(siftData, lowImg, numOctaves, 0.0f, thresh, lowestScale, 1.0f, memoryTmp, memorySub + height*iAlignUp(width, 128));
     safeCall(cudaMemcpy(&siftData.numPts, &d_PointCounterAddr[2*numOctaves], sizeof(int), cudaMemcpyDeviceToHost)); 
@@ -122,7 +122,7 @@ void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves, double init
     upImg.Allocate(width, height, iAlignUp(width, 128), false, memoryTmp);
     TimerGPU timer1(0); 
     ScaleUp(upImg, img);
-    LowPass(lowImg, upImg, max(initBlur, 0.001f));
+    LowPass(lowImg, upImg, fmax(initBlur, 0.001f));
     float kernel[8*12*16];
     PrepareLaplaceKernels(numOctaves, 0.0f, kernel);
     safeCall(cudaMemcpyToSymbolAsync(d_LaplaceKernel, kernel, 8*12*16*sizeof(float), 0, cudaMemcpyHostToDevice));

@@ -117,6 +117,38 @@ void TestDifferentThresholds()
   CHECK(monotonic, "Higher threshold = fewer features (monotonic decrease)");
 }
 
+void TestInitialBlur()
+{
+  std::cout << "\n--- Test: Initial Blur ---" << std::endl;
+
+  cv::Mat img = cv::imread("data/img1.png", 0);
+  if (img.empty()) return;
+  cv::Mat fimg;
+  img.convertTo(fimg, CV_32FC1);
+
+  CudaImage cudaImg;
+  cudaImg.Allocate(fimg.cols, fimg.rows, iAlignUp(fimg.cols, 128), false, NULL, (float *)fimg.data);
+  cudaImg.Download();
+
+  int prevCount = 99999;
+  bool decreasing = true;
+  float blurs[] = {0.0f, 0.5f, 1.0f, 1.6f};
+  for (float b : blurs) {
+    SiftData siftData;
+    InitSiftData(siftData, 32768, true, true);
+    float *mem = AllocSiftTempMemory(fimg.cols, fimg.rows, 5, false);
+    ExtractSift(siftData, cudaImg, 5, b, 3.0f, 0.0f, false, mem);
+    FreeSiftTempMemory(mem);
+
+    std::cout << "    initBlur=" << b << " -> " << siftData.numPts << " features" << std::endl;
+    if (siftData.numPts >= prevCount)
+      decreasing = false;
+    prevCount = siftData.numPts;
+    FreeSiftData(siftData);
+  }
+  CHECK(decreasing, "More initial blur = fewer features (strict decrease)");
+}
+
 void TestDifferentOctaves()
 {
   std::cout << "\n--- Test: Octave Count ---" << std::endl;
@@ -243,6 +275,7 @@ int main(int argc, char **argv)
 
   TestBasicExtraction();
   TestDifferentThresholds();
+  TestInitialBlur();
   TestDifferentOctaves();
   TestReproducibility();
   TestScaleUp();
