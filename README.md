@@ -513,6 +513,48 @@ This branch includes the following optimizations for the Ada Lovelace architectu
 | `minScore` | 0.85 | Minimum match score for RANSAC |
 | `maxAmbiguity` | 0.95 | Maximum ambiguity ratio for RANSAC |
 
+## OpenCV- and VLFeat-Compatible Extraction
+
+`ExtractSiftCompat` (`cudaSiftCompat.h`) extracts the same features as OpenCV's SIFT (`cv::SIFT`, OpenCV 4.8 and later with `enable_precise_upscale`) or VLFeat's (`vl_sift_*`, VLFeat 0.9.21), with its own kernels; `ExtractSift` is unchanged. It follows their code step by step: the optional doubling of the image before the first octave (OpenCV's and COLMAP's default), the same Gaussian kernels and borders, extrema, sub-pixel interpolation, orientation histograms and descriptors. The keypoints and descriptors differ from theirs only by floating-point rounding, and don't vary between runs. OpenCV's and VLFeat's modes run the same kernels, the mode and the parameters selecting each library's steps; `COLMAP()` is VLFeat's mode with COLMAP's parameters.
+
+```cpp
+#include "cudaSiftCompat.h"
+
+SiftData data;
+InitSiftData(data, 32768, true, true);
+ExtractSiftCompat(data, img);                               // OpenCV's SIFT, cv::SIFT::create() defaults
+ExtractSiftCompat(data, img, SiftCompatParams::VLFeat());   // VLFeat's defaults
+ExtractSiftCompat(data, img, SiftCompatParams::COLMAP());   // VLFeat with COLMAP's settings
+MatchSiftData(data, data2);                                 // matching and homographies as with ExtractSift
+```
+
+`SiftCompatParams` has the parameters of `cv::SIFT::create` (`nfeatures`, `nOctaveLayers`, `contrastThreshold`, `edgeThreshold`, `sigma`) and of VLFeat (`firstOctave`, `numOctaves`, `peakThreshold`, `edgeThreshold`, `maxOrientations`), COLMAP's post-processing (whole DoG levels up to `maxFeatures`, L1-root descriptors rounded to 8 bits with `rootSift`; positions are not shifted by COLMAP's +0.5, so add 0.5 to `xpos` and `ypos` for COLMAP's coordinates), and `doublePrecision`, `extendFirstOctave` and `extendFirstOctaveScales` (below); they are documented in `cudaSiftCompat.h`. The `SiftPoint` fields follow OpenCV's conventions, documented in `cudaSiftCompat.h`: `scale` is sigma (half of OpenCV's `KeyPoint::size`) and `orientation` is OpenCV's `KeyPoint::angle` in degrees. The input image has values 0 to 255, as for `ExtractSift`. Temporary memory is kept between calls; `FreeSiftCompatMemory()` releases it.
+
+`doublePrecision` (false by default) sets the precision of the refinement, orientations and descriptors. VLFeat computes them in double, so the float default deviates from its code; it is faster on GPUs with slow double precision, and the features are essentially the same: on HPatches, 0 of VLFeat's 789,016 keypoints and 2 of COLMAP's 1,555,638 are missing in float, none in double. Where it is faster and the features stay essentially the same, the kernels multiply by reciprocals where the libraries divide. OpenCV computes in float: there, double is a deviation from OpenCV.
+
+`extendFirstOctave` (with `firstOctave = 0`) is an alternative to doubling the image, which none of the three libraries has. It adds to the first octave the Gaussian levels below `sigma` that the doubled image would have, at sigma · 2^(−j/S) for j = 1..S (S = `nOctaveLayers`), blurred from the input image (assumed blurred by 0.5, `SIFT_INIT_SIGMA`) at the original resolution. The first octave then has 2S detection scales instead of S, down to half the scale; `sigma`, the thresholds and the other octaves are unchanged, so the keypoints are those of `firstOctave = 0` plus finer ones. `extendFirstOctaveScales` keeps only the coarsest of the added scales. On HPatches and on the synthetic pairs of `eval_hpatches`, the extension gives about the same homography accuracy as doubling, in half the time.
+
+On a Tesla T4, for `data/img1.png` (1920x1080), including the copy of the features to the host:
+
+| | Extraction | Features |
+|---|---|---|
+| `ExtractSift` (5 octaves, `initBlur` 1, `thresh` 3) | 1.5 ms | 1931 |
+| `ExtractSiftCompat`, OpenCV | 10.8 ms | 6157 |
+| `ExtractSiftCompat`, OpenCV, `firstOctave` 0 and `extendFirstOctave` | 5.5 ms | 6085 |
+| `ExtractSiftCompat`, VLFeat | 5.9 ms | 4750 |
+| `ExtractSiftCompat`, VLFeat, `doublePrecision` | 8.8 ms | 4750 |
+| `ExtractSiftCompat`, COLMAP | 13.8 ms | 8385 |
+| OpenCV 4.13 on the CPU (Xeon Platinum 8259CL), 1 thread | 649 ms | 6157 |
+| VLFeat 0.9.21 on the CPU, 1 thread | 1.1 s | 4750 |
+| COLMAP's settings on VLFeat 0.9.21, CPU, 1 thread | 3.2 s | 8385 |
+
+`ExtractSiftCompat` is slower than `ExtractSift` mostly because OpenCV and COLMAP work on the doubled image by default; at the original resolution, it takes 1.8 to 4 times as long (the libraries' exact steps, and more features). `tests/compare_sift` checks the agreement keypoint by keypoint, with OpenCV (4.8 or later), or with VLFeat (`--vlfeat`, `--colmap`) in builds with VLFeat (`-DVLFEAT_DIR=<prefix with include/vl and lib>`):
+
+```bash
+build/compare_sift data/img1.png data/img2.png
+build/compare_sift --colmap data/img1.png
+```
+
 ## References
 
 - David G. Lowe, "Distinctive Image Features from Scale-Invariant Keypoints," IJCV, 2004.
