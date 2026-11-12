@@ -21,6 +21,8 @@ Based on the original work by Mårten Björkman (Celebrandil), with Ada Lovelace
 | L2 Cache | 32 MB |
 | Driver | 595.71 |
 
+The Apple Metal backend (`-DUSE_METAL=ON`) runs on Apple silicon GPUs, M1 or later. See [Apple Metal Backend](#apple-metal-backend).
+
 ## Performance Benchmarks
 
 ### SIFT Extraction (5 octaves, threshold=3.0)
@@ -35,8 +37,10 @@ Based on the original work by Mårten Björkman (Celebrandil), with Ada Lovelace
 | 4K UHD | 3840x2160 | 2829 | 3.53 | 0.51 | 6.95 | 144 |
 
 > Benchmarked on RTX 4060 Ti (Driver 595.71, CUDA 13.1). Compute Capability 8.9, 34 SMs, 8187 MB VRAM, 128-bit bus, 32768 KB L2 cache.
+>
+> These RTX 4060 Ti numbers were measured with the previous kernels (`LaplaceMulti` + `FindPointsMulti`, `FindMaxCorr10`), not the current ones.
 
-### Feature Matching (FindMaxCorr10 kernel)
+### Feature Matching
 
 | Features | Match Time (ms) |
 |----------|----------------|
@@ -82,14 +86,15 @@ Input Image (Host -> Device)
 |  Octave 0 (full) -> Octave 1 (1/2) -> ... -> N   |
 |         |                                         |
 |         v                                         |
-|  LaplaceMulti: DoG computation                    |
-|  (5 scales + 3 border per octave)                 |
+|  ScaleDownDirect: 2x downsampling per octave      |
 +--------------------------------------------------+
          |
          v
 +--------------------------------------------------+
-|          Keypoint Detection                       |
-|  FindPointsMulti:                                 |
+|    DoG + Keypoint Detection (fused)               |
+|  LaplaceFindPoints:                               |
+|    - DoG layers in shared memory, per tile        |
+|      (5 scales + 3 border per octave)             |
 |    - 3D extrema detection (26 neighbors)          |
 |    - Edge response rejection                      |
 |    - Sub-pixel localization (Taylor expansion)    |
@@ -98,7 +103,7 @@ Input Image (Host -> Device)
          v
 +--------------------------------------------------+
 |        Orientation Assignment                     |
-|  ComputeOrientations:                             |
+|  ComputeOrientationsCONST:                        |
 |    - 32-bin gradient histogram                    |
 |    - Gaussian-weighted 11x11 window               |
 |    - Secondary peak -> duplicate feature          |
@@ -107,7 +112,7 @@ Input Image (Host -> Device)
          v
 +--------------------------------------------------+
 |       Descriptor Computation                      |
-|  ExtractSiftDescriptors:                          |
+|  ExtractSiftDescriptorsGather:                    |
 |    - 4x4 spatial bins x 8 orientations            |
 |    - 128-D vector per feature                     |
 |    - Two-pass normalization (clip + renorm)       |
@@ -116,35 +121,39 @@ Input Image (Host -> Device)
          v
 +--------------------------------------------------+
 |          Feature Matching                         |
-|  FindMaxCorr10 (brute-force):                     |
-|    - 32x32 feature block tiling                   |
-|    - float4 vectorized loads                      |
-|    - Warp shuffle reductions                      |
-|    - Best + second-best tracking (ambiguity)      |
+|  FindMaxCorr11 + MergeMaxCorr11 (brute-force):    |
+|    - 64x64 tile pairs over persistent blocks      |
+|    - 8x8 correlations per thread                  |
+|    - Best + second-best per tile, then merged     |
 |                                                   |
 |  FindHomography (RANSAC):                         |
 |    - 4-point DLT on GPU                           |
 |    - Parallel hypothesis testing                  |
 |    - Iterative refinement (CPU, Cholesky)         |
+|                                                   |
+|  FindHomographyGPU + ImproveHomographyGPU:        |
+|    - The same, entirely on the GPU                |
 +--------------------------------------------------+
 ```
+
+This is the CUDA pipeline. The Metal backend ports these kernels, with the same stages. See [Apple Metal Backend](#apple-metal-backend).
 
 ## CUDA Kernel Configuration
 
 | Kernel | Block Size | Shared Mem | Description |
 |--------|-----------|------------|-------------|
-| ScaleDown | 68x1 | 2 KB | 2x downsampling with 5-tap Gaussian |
-| LaplaceMulti | 136x1 | 4 KB | Multi-scale DoG computation |
-| FindPointsMulti | 32x1 | 1 KB | 3D extrema detection + sub-pixel |
-| ComputeOrientations | 121x1 | 0.5 KB | Gradient histogram, peak detection |
-| ExtractSiftDescriptors | 16x8 | 0.7 KB | 128-D descriptor with trilinear interp |
-| FindMaxCorr10 | 32x8 | 32 KB | Tiled brute-force matching |
+| ScaleDownDirect | 32x8 | - | 2x downsampling with 5-tap Gaussian |
+| LaplaceFindPoints | 288x1 | 19 KB | Multi-scale DoG + 3D extrema detection + sub-pixel |
+| ComputeOrientationsCONST | 121x1 | 1.2 KB | Gradient histogram, peak detection |
+| ExtractSiftDescriptorsGather | 16x8 | 6.1 KB | 128-D descriptor with trilinear interp |
+| FindMaxCorr11 + MergeMaxCorr11 | 64x1, 128x1 | 8.5 KB | Tiled brute-force matching |
 
 ## Building
 
 ### Prerequisites
 
-- **CUDA Toolkit** 11.0+ (recommended 12.x for Ada Lovelace)
+- **CUDA Toolkit** 11.0+ (recommended 12.x for Ada Lovelace). Not needed for the Metal build.
+- For the Metal build: an Apple silicon Mac (M1 or later) and the Xcode Command Line Tools
 - **OpenCV** 4.x
 - **CMake** 3.18+
 - **C++17** compatible compiler
@@ -177,8 +186,29 @@ bash scripts/build.sh Release
 |--------|---------|-------------|
 | `BUILD_TESTS` | ON | Build test and benchmark programs |
 | `BUILD_EXAMPLES` | ON | Build example programs |
+| `CMAKE_CUDA_ARCHITECTURES` | 89 | Target GPU architecture(s), e.g. `75` for a Tesla T4 (also `CUDAARCHS`) |
 | `USE_MANAGED_MEM` | OFF | Use CUDA managed memory |
 | `VERBOSE_OUTPUT` | ON | Enable verbose timing output |
+| `USE_METAL` | OFF | Build the Apple Metal backend instead of CUDA (macOS) |
+
+### Apple Metal Build (macOS)
+
+Requires an Apple silicon Mac (M1 or later). The CUDA Toolkit is not needed. Install the Xcode Command Line Tools, then CMake and OpenCV 4 with [Homebrew](https://brew.sh):
+
+```bash
+xcode-select --install
+brew install cmake opencv@4
+```
+
+Homebrew's `opencv@4` is not linked into the default paths, so pass its location to CMake. `-DVERBOSE_OUTPUT=OFF` turns off the per-stage timing (`ExtractSift` and `MatchSiftData` still print their times, as with CUDA):
+
+```bash
+cmake -S . -B build-metal -DUSE_METAL=ON -DCMAKE_BUILD_TYPE=Release -DVERBOSE_OUTPUT=OFF \
+  -DOpenCV_DIR=$(brew --prefix opencv@4)/lib/cmake/opencv4
+cmake --build build-metal -j
+```
+
+See [Apple Metal Backend](#apple-metal-backend).
 
 ## Usage
 
@@ -227,45 +257,34 @@ Keys: `q` quit, `+`/`-` adjust threshold.
 ./benchmark 0 200 3.0
 ```
 
-Outputs performance tables at multiple resolutions with extraction, matching, and upload times.
+Outputs performance tables at multiple resolutions: extraction, matching, upload and homography estimation times (`FindHomography` + `ImproveHomography`, and `FindHomographyGPU` + `ImproveHomographyGPU`).
 
 ## Running Tests
 
+The tests read `data/` by relative path, so run them from the repository root:
+
 ```bash
 # Individual tests
-./test_extract     # Feature extraction correctness
-./test_match       # Matching and quality tests
-./test_homography  # Geometric verification tests
+build/test_extract         # Feature extraction correctness
+build/test_match           # Matching and quality tests
+build/test_homography      # Geometric verification tests
+build/test_homography_gpu  # FindHomographyGPU, ImproveHomographyGPU
+build/test_batch           # Batches of calls (cudaSiftBatch.h)
+build-metal/test_metal_interop  # Access to the Metal objects (Metal build only)
 
-# All tests + benchmark
+# All built tests + benchmark (default build directory: build)
 bash scripts/run_benchmark.sh
+bash scripts/run_benchmark.sh build-metal
 ```
 
-### Test Results (RTX 4060 Ti)
+Each test prints a `[PASS]`, `[FAIL]` or `[SKIP]` line per check and exits with a nonzero code on failure:
 
-| Test Suite | Passed | Total | Rate |
-|------------|--------|-------|------|
-| test_extract | 10 | 10 | 100% |
-| test_match | 11 | 11 | 100% |
-| test_homography | 8 | 8 | 100% |
-| **Total** | **29** | **29** | **100%** |
-
-### Test Coverage
-
-| Test | What It Verifies |
+| Test | What it verifies |
 |------|-----------------|
-| BasicExtraction | Features detected, valid positions/scales |
-| DifferentThresholds | Higher threshold = fewer features |
-| DifferentOctaves | More octaves = more features |
-| Reproducibility | Identical results across runs |
-| ScaleUp | 2x upsampling detects more features |
-| SelfMatch | Self-matching gives perfect scores |
-| CrossMatch | Cross-image matching produces valid results |
-| Homography | RANSAC + refinement finds inliers |
-| Translation | Recovers known translation |
-| Rotation | Handles 10 degree rotation |
-| Scale | Handles 80% scale change |
-| PGMImages | Stereo pair matching |
+| test_extract | Extraction: features, thresholds, octaves, reproducibility, upsampling, and the regression tests of the bug fixes |
+| test_match | Self-matching, cross-matching, RANSAC and refinement, matching time |
+| test_homography | Translation, rotation, scale, stereo pair, and the regression tests of the homography fixes |
+| test_homography_gpu | `FindHomographyGPU` and `ImproveHomographyGPU` against `FindHomography` and `ImproveHomography` |
 
 ## API Reference
 
@@ -288,14 +307,91 @@ void ExtractSift(SiftData &siftData, CudaImage &img, int numOctaves,
 void InitSiftData(SiftData &data, int num = 1024, bool host = false, bool dev = true);
 void FreeSiftData(SiftData &data);
 
+// Sort the points by position (optional, for reproducible results; see below)
+void SortSiftData(SiftData &data);
+
 // Match two sets of SIFT features on GPU
 double MatchSiftData(SiftData &data1, SiftData &data2);
 
-// Find homography using RANSAC
+// Find homography using RANSAC, among the matches with score > minScore and
+// ambiguity < maxAmbiguity; numMatches is the number of inliers among them
 double FindHomography(SiftData &data, float *homography, int *numMatches,
                       int numLoops = 1000, float minScore = 0.85f,
                       float maxAmbiguity = 0.95f, float thresh = 5.0f);
+
+// As FindHomography, with a seeded random number generator instead of rand()
+double FindHomographySeeded(SiftData &data, float *homography, int *numMatches,
+                            int numLoops = 1000, float minScore = 0.85f,
+                            float maxAmbiguity = 0.95f, float thresh = 5.0f,
+                            unsigned int seed = 42);
+
+// Find homography using RANSAC entirely on the GPU, with the same seeded
+// random number generator (see Homography Estimation on the GPU)
+double FindHomographyGPU(SiftData &data, float *homography, int *numMatches,
+                         int numLoops = 1000, float minScore = 0.85f,
+                         float maxAmbiguity = 0.95f, float thresh = 5.0f,
+                         unsigned int seed = 42);
+
+// Refine a homography by least squares over the inliers, on the GPU
+// (ImproveHomography in geomFuncs.cpp does it on the CPU)
+double ImproveHomographyGPU(SiftData &data, float *homography, int *numFit,
+                            int numLoops = 5, float minScore = 0.0f,
+                            float maxAmbiguity = 0.80f, float thresh = 3.0f);
+
+// Refine a homography on the CPU (geomFuncs.cpp). Not declared in any
+// header: declare it yourself, as the tests do. Returns the number of inliers.
+int ImproveHomography(SiftData &data, float *homography, int numLoops,
+                      float minScore, float maxAmbiguity, float thresh);
 ```
+
+- `FindHomographyGPU` and `ImproveHomographyGPU` return the GPU time in ms with CUDA, and the wall time of the call with Metal. Inside a batch (`cudaSiftBatch.h`), the functions that return a time return 0.0.
+- `AllocSiftTempMemory` reserves no DoG layers, since `LaplaceFindPoints` keeps them in shared memory. With 5 octaves, it takes 1.7 MB at 640x480, 10.7 MB at 1920x1080 and 42.4 MB at 3840x2160 (74.0 MB at 1920x1080 with `scaleUp`). `ExtractSift` without `tempMemory` allocates it on every call.
+- `InitSiftData` allocates `h_data` in pinned memory (`cudaMallocHost`), which makes the copies from the device faster. `FreeSiftData` frees it with `cudaFreeHost`, or with `free` if the caller allocated `h_data` with `malloc`.
+- Threads: `ExtractSift`, `MatchSiftData`, `FindHomographyGPU` and `ImproveHomographyGPU` can be called from several host threads. Each holds a lock of its device until it completes, so calls on the same device run one at a time, and calls on different devices run concurrently. Allocating and freeing `CudaImage` and `SiftData` is thread-safe too. `FindHomographySeeded` is thread-safe too; `FindHomography` uses `rand()`, which is not. Build each batch from a single thread (see `cudaSiftBatch.h`).
+- Cached constant uploads and scratch memory are not invalidated by `cudaDeviceReset()`. Don't reset the device while using CudaSift.
+
+### Homography Estimation on the GPU
+
+`FindHomography` selects and samples the matches on the CPU with `rand()`, and `ImproveHomography` (`geomFuncs.cpp`) runs on the CPU. `FindHomographyGPU` and `ImproveHomographyGPU` do the same entirely on the GPU, so the matches stay there. Both backends implement them, and they can be part of a batch (`cudaSiftBatch.h`).
+
+- `FindHomographySeeded` is `FindHomography` with a counter-based random number generator seeded with `seed` (`cudaSiftRandom.h`) instead of `rand()`, so the samples are reproducible.
+- `FindHomographyGPU` draws the same samples, and gives the same result as `FindHomographySeeded`.
+- Both depend on the order of the points, as `FindHomography` does, and `ExtractSift` writes the points in an order that varies between runs. For reproducible results (tests, benchmarks), sort both point sets with `SortSiftData` after `ExtractSift` and before `MatchSiftData`: it orders them by position, then scale, orientation and descriptor, on the CPU (not in a batch). It is optional; without it, the results vary slightly between runs.
+- `ImproveHomographyGPU` reproduces `ImproveHomography`: in double precision with CUDA, and with double-float arithmetic (about 48 bits) with Metal, which has no double precision. When an iteration has fewer than 4 inliers or the normal equations are not positive definite, it keeps the homography unchanged, as `ImproveHomography` does.
+
+Compared with `FindHomography` and `ImproveHomography` on `data/img1.png` and `data/img2.png` (10000 hypotheses, `tests/test_homography_gpu`):
+
+| | CUDA (Tesla T4) | Metal (Apple M5 Pro) |
+|---|---|---|
+| Matches: `FindHomography` / `FindHomographyGPU` (seeds 1–10) | 130 / 130 | 126 / 126 |
+| Both refined with `ImproveHomography` | Same homography, 948 inliers | Same homography, 1009 inliers |
+| Inliers: `ImproveHomography` / `ImproveHomographyGPU` | 948 / 948 | 1009 / 1009 |
+| Homography difference (max over the inliers) | 0.0003 px | 0.0003 px |
+| `match_error` difference (max) | 0.00015 px | 0.0002 px |
+
+With upstream PR [#98](https://github.com/Celebrandil/CudaSift/pull/98), which the Metal kernels include, CUDA finds 125 / 125 matches and 1010 inliers.
+
+### Batches of Calls
+
+Outside a batch, each call returns after its GPU work has completed. `ExtractSift`, `MatchSiftData`, `FindHomographyGPU` and `ImproveHomographyGPU` calls made between `BeginSiftBatch()` and `EndSiftBatch()` (`cudaSiftBatch.h`) don't wait: `EndSiftBatch()` returns immediately, the CPU can do other work while the batch runs, and `WaitSiftBatch()` makes the results available. The results are identical to those of the same calls outside a batch.
+
+```cpp
+#include "cudaSiftBatch.h"
+
+BeginSiftBatch();
+ExtractSift(siftData2, img2, 5, 1.0f, 3.0f);
+MatchSiftData(siftData1, siftData2);
+EndSiftBatch();                     // returns immediately
+...                                 // other CPU work, e.g. on the previous frame's results
+double gpuTime = WaitSiftBatch();   // results are valid
+```
+
+With CUDA, the calls of a batch keep the point counts on the GPU and leave the copies to the host to `WaitSiftBatch()`. With Metal, they are also submitted together, which saves the driver latency of each call. `cudaSiftBatch.h` documents the rules. Frame loop of `tests/test_batch` (a 1080p extraction and its matching with the previous frame), per frame:
+
+| | Tesla T4, separate calls | Tesla T4, batch | M5 Pro, separate calls | M5 Pro, batch |
+|---|---|---|---|---|
+| No other CPU work | 1.39 ms | 1.38 ms | 1.15 ms | 1.05 ms |
+| 1 ms of CPU work per frame | 2.29 ms | 1.38 ms | 2.24 ms | 1.03 ms |
 
 ### Data Structures
 
@@ -332,6 +428,8 @@ CudaSift/
 |-- LICENSE                  # MIT License
 |
 |-- cudaSift.h              # Public API header
+|-- cudaSiftBatch.h         # Batches of calls (both backends)
+|-- cudaSiftRandom.h        # Seeded random numbers (FindHomographySeeded, FindHomographyGPU)
 |-- cudaSiftH.cu            # Host-side SIFT pipeline
 |-- cudaSiftH.h             # Host function declarations
 |-- cudaSiftD.cu            # Device kernels (DoG, keypoints, descriptors)
@@ -343,6 +441,15 @@ CudaSift/
 |-- geomFuncs.cpp           # CPU homography refinement
 |-- mainSift.cpp            # Main demo program
 |
+|-- metal/                  # Apple Metal backend (USE_METAL=ON)
+|   |-- README.md           # Metal backend design, optimizations, timings
+|   |-- cudaSift.metal      # Metal kernels
+|   |-- cudaSiftMetal.mm    # Host code (Objective-C++)
+|   |-- cudaSiftMetalShared.h  # Kernel parameter structs and geometry constants
+|   |-- EmbedMetalSource.cmake # Embeds the kernel source in the library
+|   |-- cudaSiftMetal.h     # Metal-specific API: the Metal objects behind CudaSift's data
+|   +-- compat/cuda_runtime.h  # CUDA runtime subset used by tests/demos
+|
 |-- examples/
 |   |-- demo_extract.cpp    # Single-image extraction demo
 |   |-- demo_match.cpp      # Two-image matching demo
@@ -352,7 +459,10 @@ CudaSift/
 |   |-- benchmark.cpp       # Multi-resolution performance benchmark
 |   |-- test_extract.cpp    # Extraction correctness tests
 |   |-- test_match.cpp      # Matching quality tests
-|   +-- test_homography.cpp # Geometric verification tests
+|   |-- test_homography.cpp # Geometric verification tests
+|   |-- test_homography_gpu.cpp # FindHomographyGPU, ImproveHomographyGPU
+|   |-- test_batch.cpp      # Batches of calls
+|   +-- test_metal_interop.mm  # Access to the Metal objects (Metal)
 |
 |-- scripts/
 |   |-- build.sh            # Build script
@@ -366,6 +476,17 @@ CudaSift/
 |
 +-- match.pdf               # Matching kernel optimization notes
 ```
+
+## Apple Metal Backend
+
+With `-DUSE_METAL=ON`, CudaSift is built for Apple GPUs with Metal instead of CUDA. The API (`cudaSift.h`, `cudaImage.h`) is the same, so the tests, benchmark, demos and existing applications build unchanged. The default CUDA build is not affected.
+
+- **Kernels** (`metal/cudaSift.metal`) are ports of the CUDA kernels, compiled at run time. As with CUDA, DoG and extrema detection are fused and histograms are summed in a fixed order (so the points and their values are deterministic, as long as there are fewer than `maxPts` points; their order varies). Some are restructured for Apple GPUs: orientations use one SIMD group per point, the octaves are processed concurrently, and matching uses SIMD group matrix operations.
+- **Host code** (`metal/cudaSiftMetal.mm`) uses unified memory. `SiftData::h_data` and `d_data` point to the same memory, so no copies are needed. Calls outside a batch are synchronous. Each call drains its own autorelease pool, so memory use stays flat in a plain C++ program (154 MB over 400 1080p extractions).
+- **Batches** (`cudaSiftBatch.h`, see [Batches of Calls](#batches-of-calls)): `ExtractSift`, `MatchSiftData`, `FindHomographyGPU` and `ImproveHomographyGPU` calls between `BeginSiftBatch()` and `EndSiftBatch()` are submitted together. Each separate call costs 130–160 µs on an M5 Pro, mostly driver latency, and a batch pays the submission latency once: a 1080p extraction plus matching takes 1.03 ms per frame in a batch, against 1.13 ms as separate calls.
+- Compared with the CUDA code with the same fixes (including upstream PRs [#96](https://github.com/Celebrandil/CudaSift/pull/96) and [#98](https://github.com/Celebrandil/CudaSift/pull/98)), on the same input images, 99.5-99.9% of the keypoints are identical, and 99.85% of the matches have the same target.
+
+See [metal/README.md](metal/README.md) for the design, the batch API, the Metal-specific optimizations, timings, validation, and how to test on other Macs.
 
 ## Ada Lovelace Optimizations
 
