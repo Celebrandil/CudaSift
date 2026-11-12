@@ -21,6 +21,8 @@ Based on the original work by Mårten Björkman (Celebrandil), with Ada Lovelace
 | L2 Cache | 32 MB |
 | Driver | 595.71 |
 
+The Apple Metal backend (`-DUSE_METAL=ON`) runs on Apple silicon GPUs, M1 or later. See [Apple Metal Backend](#apple-metal-backend).
+
 ## Performance Benchmarks
 
 ### SIFT Extraction (5 octaves, threshold=3.0)
@@ -134,6 +136,8 @@ Input Image (Host -> Device)
 +--------------------------------------------------+
 ```
 
+This is the CUDA pipeline. The Metal backend ports these kernels, with the same stages. See [Apple Metal Backend](#apple-metal-backend).
+
 ## CUDA Kernel Configuration
 
 | Kernel | Block Size | Shared Mem | Description |
@@ -148,7 +152,8 @@ Input Image (Host -> Device)
 
 ### Prerequisites
 
-- **CUDA Toolkit** 11.0+ (recommended 12.x for Ada Lovelace)
+- **CUDA Toolkit** 11.0+ (recommended 12.x for Ada Lovelace). Not needed for the Metal build.
+- For the Metal build: an Apple silicon Mac (M1 or later) and the Xcode Command Line Tools
 - **OpenCV** 4.x
 - **CMake** 3.18+
 - **C++17** compatible compiler
@@ -184,6 +189,26 @@ bash scripts/build.sh Release
 | `CMAKE_CUDA_ARCHITECTURES` | 89 | Target GPU architecture(s), e.g. `75` for a Tesla T4 (also `CUDAARCHS`) |
 | `USE_MANAGED_MEM` | OFF | Use CUDA managed memory |
 | `VERBOSE_OUTPUT` | ON | Enable verbose timing output |
+| `USE_METAL` | OFF | Build the Apple Metal backend instead of CUDA (macOS) |
+
+### Apple Metal Build (macOS)
+
+Requires an Apple silicon Mac (M1 or later). The CUDA Toolkit is not needed. Install the Xcode Command Line Tools, then CMake and OpenCV 4 with [Homebrew](https://brew.sh):
+
+```bash
+xcode-select --install
+brew install cmake opencv@4
+```
+
+Homebrew's `opencv@4` is not linked into the default paths, so pass its location to CMake. `-DVERBOSE_OUTPUT=OFF` turns off the per-stage timing (`ExtractSift` and `MatchSiftData` still print their times, as with CUDA):
+
+```bash
+cmake -S . -B build-metal -DUSE_METAL=ON -DCMAKE_BUILD_TYPE=Release -DVERBOSE_OUTPUT=OFF \
+  -DOpenCV_DIR=$(brew --prefix opencv@4)/lib/cmake/opencv4
+cmake --build build-metal -j
+```
+
+See [Apple Metal Backend](#apple-metal-backend).
 
 ## Usage
 
@@ -245,9 +270,11 @@ build/test_match           # Matching and quality tests
 build/test_homography      # Geometric verification tests
 build/test_homography_gpu  # FindHomographyGPU, ImproveHomographyGPU
 build/test_batch           # Batches of calls (cudaSiftBatch.h)
+build-metal/test_metal_interop  # Access to the Metal objects (Metal build only)
 
 # All built tests + benchmark (default build directory: build)
-bash scripts/run_benchmark.sh [build directory]
+bash scripts/run_benchmark.sh
+bash scripts/run_benchmark.sh build-metal
 ```
 
 Each test prints a `[PASS]`, `[FAIL]` or `[SKIP]` line per check and exits with a nonzero code on failure:
@@ -317,30 +344,32 @@ int ImproveHomography(SiftData &data, float *homography, int numLoops,
                       float minScore, float maxAmbiguity, float thresh);
 ```
 
-- `FindHomographyGPU` and `ImproveHomographyGPU` return the GPU time in ms. Inside a batch (`cudaSiftBatch.h`), the functions that return a time return 0.0.
+- `FindHomographyGPU` and `ImproveHomographyGPU` return the GPU time in ms with CUDA, and the wall time of the call with Metal. Inside a batch (`cudaSiftBatch.h`), the functions that return a time return 0.0.
 - `AllocSiftTempMemory` reserves no DoG layers, since `LaplaceFindPoints` keeps them in shared memory. With 5 octaves, it takes 1.7 MB at 640x480, 10.7 MB at 1920x1080 and 42.4 MB at 3840x2160 (74.0 MB at 1920x1080 with `scaleUp`). `ExtractSift` without `tempMemory` allocates it on every call.
 - `InitSiftData` allocates `h_data` in pinned memory (`cudaMallocHost`), which makes the copies from the device faster. `FreeSiftData` frees it with `cudaFreeHost`, or with `free` if the caller allocated `h_data` with `malloc`.
-- Threads: `ExtractSift`, `MatchSiftData`, `FindHomographyGPU` and `ImproveHomographyGPU` can be called from several host threads. Each holds a lock of its device until it completes, so calls on the same device run one at a time, and calls on different devices run concurrently. `FindHomographySeeded` is thread-safe too; `FindHomography` uses `rand()`, which is not.
+- Threads: `ExtractSift`, `MatchSiftData`, `FindHomographyGPU` and `ImproveHomographyGPU` can be called from several host threads. Each holds a lock of its device until it completes, so calls on the same device run one at a time, and calls on different devices run concurrently. Allocating and freeing `CudaImage` and `SiftData` is thread-safe too. `FindHomographySeeded` is thread-safe too; `FindHomography` uses `rand()`, which is not. Build each batch from a single thread (see `cudaSiftBatch.h`).
 - Cached constant uploads and scratch memory are not invalidated by `cudaDeviceReset()`. Don't reset the device while using CudaSift.
 
 ### Homography Estimation on the GPU
 
-`FindHomography` selects and samples the matches on the CPU with `rand()`, and `ImproveHomography` (`geomFuncs.cpp`) runs on the CPU. `FindHomographyGPU` and `ImproveHomographyGPU` do the same entirely on the GPU, so the matches stay there.
+`FindHomography` selects and samples the matches on the CPU with `rand()`, and `ImproveHomography` (`geomFuncs.cpp`) runs on the CPU. `FindHomographyGPU` and `ImproveHomographyGPU` do the same entirely on the GPU, so the matches stay there. Both backends implement them, and they can be part of a batch (`cudaSiftBatch.h`).
 
 - `FindHomographySeeded` is `FindHomography` with a counter-based random number generator seeded with `seed` (`cudaSiftRandom.h`) instead of `rand()`, so the samples are reproducible.
 - `FindHomographyGPU` draws the same samples, and gives the same result as `FindHomographySeeded`.
 - Both depend on the order of the points, as `FindHomography` does, and `ExtractSift` writes the points in an order that varies between runs. For reproducible results (tests, benchmarks), sort both point sets with `SortSiftData` after `ExtractSift` and before `MatchSiftData`: it orders them by position, then scale, orientation and descriptor, on the CPU (not in a batch). It is optional; without it, the results vary slightly between runs.
-- `ImproveHomographyGPU` reproduces `ImproveHomography` in double precision. When an iteration has fewer than 4 inliers or the normal equations are not positive definite, it keeps the homography unchanged, as `ImproveHomography` does.
+- `ImproveHomographyGPU` reproduces `ImproveHomography`: in double precision with CUDA, and with double-float arithmetic (about 48 bits) with Metal, which has no double precision. When an iteration has fewer than 4 inliers or the normal equations are not positive definite, it keeps the homography unchanged, as `ImproveHomography` does.
 
-Compared with `FindHomography` and `ImproveHomography` on `data/img1.png` and `data/img2.png` (10000 hypotheses, `tests/test_homography_gpu`, Tesla T4):
+Compared with `FindHomography` and `ImproveHomography` on `data/img1.png` and `data/img2.png` (10000 hypotheses, `tests/test_homography_gpu`):
 
-| | CUDA (Tesla T4) |
-|---|---|
-| Matches: `FindHomography` / `FindHomographyGPU` (seeds 1–10) | 957 / 957–958 |
-| Both refined with `ImproveHomography` | Same homography, 948 inliers |
-| Inliers: `ImproveHomography` / `ImproveHomographyGPU` | 948 / 948 |
-| Homography difference (max over the inliers) | 0.0003 px |
-| `match_error` difference (max) | 0.00015 px |
+| | CUDA (Tesla T4) | Metal (Apple M5 Pro) |
+|---|---|---|
+| Matches: `FindHomography` / `FindHomographyGPU` (seeds 1–10) | 130 / 130 | 126 / 126 |
+| Both refined with `ImproveHomography` | Same homography, 948 inliers | Same homography, 1009 inliers |
+| Inliers: `ImproveHomography` / `ImproveHomographyGPU` | 948 / 948 | 1009 / 1009 |
+| Homography difference (max over the inliers) | 0.0003 px | 0.0003 px |
+| `match_error` difference (max) | 0.00015 px | 0.0002 px |
+
+With upstream PR [#98](https://github.com/Celebrandil/CudaSift/pull/98), which the Metal kernels include, CUDA finds 125 / 125 matches and 1010 inliers.
 
 ### Batches of Calls
 
@@ -357,7 +386,12 @@ EndSiftBatch();                     // returns immediately
 double gpuTime = WaitSiftBatch();   // results are valid
 ```
 
-The calls of a batch keep the point counts on the GPU and leave the copies to the host to the completion of the batch. `cudaSiftBatch.h` documents the rules. Frame loop of `tests/test_batch` on a Tesla T4 (a 1080p extraction and its matching with the previous frame): 1.39 ms per frame with separate calls and 1.38 ms in a batch; with 1 ms of other CPU work per frame, 2.29 ms and 1.38 ms.
+With CUDA, the calls of a batch keep the point counts on the GPU and leave the copies to the host to `WaitSiftBatch()`. With Metal, they are also submitted together, which saves the driver latency of each call. `cudaSiftBatch.h` documents the rules. Frame loop of `tests/test_batch` (a 1080p extraction and its matching with the previous frame), per frame:
+
+| | Tesla T4, separate calls | Tesla T4, batch | M5 Pro, separate calls | M5 Pro, batch |
+|---|---|---|---|---|
+| No other CPU work | 1.39 ms | 1.38 ms | 1.15 ms | 1.05 ms |
+| 1 ms of CPU work per frame | 2.29 ms | 1.38 ms | 2.24 ms | 1.03 ms |
 
 ### Data Structures
 
@@ -394,7 +428,7 @@ CudaSift/
 |-- LICENSE                  # MIT License
 |
 |-- cudaSift.h              # Public API header
-|-- cudaSiftBatch.h         # Batches of calls
+|-- cudaSiftBatch.h         # Batches of calls (both backends)
 |-- cudaSiftRandom.h        # Seeded random numbers (FindHomographySeeded, FindHomographyGPU)
 |-- cudaSiftH.cu            # Host-side SIFT pipeline
 |-- cudaSiftH.h             # Host function declarations
@@ -407,6 +441,15 @@ CudaSift/
 |-- geomFuncs.cpp           # CPU homography refinement
 |-- mainSift.cpp            # Main demo program
 |
+|-- metal/                  # Apple Metal backend (USE_METAL=ON)
+|   |-- README.md           # Metal backend design, optimizations, timings
+|   |-- cudaSift.metal      # Metal kernels
+|   |-- cudaSiftMetal.mm    # Host code (Objective-C++)
+|   |-- cudaSiftMetalShared.h  # Kernel parameter structs and geometry constants
+|   |-- EmbedMetalSource.cmake # Embeds the kernel source in the library
+|   |-- cudaSiftMetal.h     # Metal-specific API: the Metal objects behind CudaSift's data
+|   +-- compat/cuda_runtime.h  # CUDA runtime subset used by tests/demos
+|
 |-- examples/
 |   |-- demo_extract.cpp    # Single-image extraction demo
 |   |-- demo_match.cpp      # Two-image matching demo
@@ -418,7 +461,8 @@ CudaSift/
 |   |-- test_match.cpp      # Matching quality tests
 |   |-- test_homography.cpp # Geometric verification tests
 |   |-- test_homography_gpu.cpp # FindHomographyGPU, ImproveHomographyGPU
-|   +-- test_batch.cpp      # Batches of calls
+|   |-- test_batch.cpp      # Batches of calls
+|   +-- test_metal_interop.mm  # Access to the Metal objects (Metal)
 |
 |-- scripts/
 |   |-- build.sh            # Build script
@@ -432,6 +476,17 @@ CudaSift/
 |
 +-- match.pdf               # Matching kernel optimization notes
 ```
+
+## Apple Metal Backend
+
+With `-DUSE_METAL=ON`, CudaSift is built for Apple GPUs with Metal instead of CUDA. The API (`cudaSift.h`, `cudaImage.h`) is the same, so the tests, benchmark, demos and existing applications build unchanged. The default CUDA build is not affected.
+
+- **Kernels** (`metal/cudaSift.metal`) are ports of the CUDA kernels, compiled at run time. As with CUDA, DoG and extrema detection are fused and histograms are summed in a fixed order (so the points and their values are deterministic, as long as there are fewer than `maxPts` points; their order varies). Some are restructured for Apple GPUs: orientations use one SIMD group per point, the octaves are processed concurrently, and matching uses SIMD group matrix operations.
+- **Host code** (`metal/cudaSiftMetal.mm`) uses unified memory. `SiftData::h_data` and `d_data` point to the same memory, so no copies are needed. Calls outside a batch are synchronous. Each call drains its own autorelease pool, so memory use stays flat in a plain C++ program (154 MB over 400 1080p extractions).
+- **Batches** (`cudaSiftBatch.h`, see [Batches of Calls](#batches-of-calls)): `ExtractSift`, `MatchSiftData`, `FindHomographyGPU` and `ImproveHomographyGPU` calls between `BeginSiftBatch()` and `EndSiftBatch()` are submitted together. Each separate call costs 130–160 µs on an M5 Pro, mostly driver latency, and a batch pays the submission latency once: a 1080p extraction plus matching takes 1.03 ms per frame in a batch, against 1.13 ms as separate calls.
+- Compared with the CUDA code with the same fixes (including upstream PRs [#96](https://github.com/Celebrandil/CudaSift/pull/96) and [#98](https://github.com/Celebrandil/CudaSift/pull/98)), on the same input images, 99.5-99.9% of the keypoints are identical, and 99.85% of the matches have the same target.
+
+See [metal/README.md](metal/README.md) for the design, the batch API, the Metal-specific optimizations, timings, validation, and how to test on other Macs.
 
 ## Ada Lovelace Optimizations
 

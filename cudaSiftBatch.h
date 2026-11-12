@@ -3,7 +3,7 @@
 //********************************************************//
 
 // Batches of ExtractSift, MatchSiftData, FindHomographyGPU and ImproveHomographyGPU
-// calls.
+// calls, with both backends.
 //
 // Outside a batch, each call returns after its GPU work has completed. Calls made between
 // BeginSiftBatch() and EndSiftBatch() don't wait: their GPU work is queued, and EndSiftBatch()
@@ -17,16 +17,18 @@
 //   ...                  // other CPU work
 //   WaitSiftBatch();     // results are available
 //
-// The point counts stay on the GPU, and the results are copied to the host when the batch
-// completes.
+// With Metal, the calls of a batch are also submitted together, which saves the driver
+// latency of each call (130-160 us on an Apple M5 Pro). With CUDA, the point counts stay on
+// the GPU, and the results are copied to the host when the batch completes.
 //
 // The calls run in order, with the same results as outside a batch. Until the batch
 // completes (WaitSiftBatch() or a call outside a batch, see below), the results
 // (SiftData::numPts, the points, the match fields, the homographies and their counts) are
 // not valid, and the images, SiftData, temporary memory, homographies and numMatches /
-// numFit outputs used must not be modified or freed. With managed memory (USE_MANAGED_MEM)
-// on GPUs without concurrent managed access (cudaDevAttrConcurrentManagedAccess, e.g. on
-// Windows), the CPU must not access any managed memory while a batch runs.
+// numFit outputs used must not be modified or freed. With CUDA managed memory
+// (USE_MANAGED_MEM) on GPUs without concurrent managed access
+// (cudaDevAttrConcurrentManagedAccess, e.g. on Windows), the CPU must not access any managed
+// memory while a batch runs.
 //
 // - FindHomography and FindHomographySeeded cannot be called inside a batch (they sample
 //   the matches on the CPU): the program stops with an error. FindHomographyGPU can.
@@ -41,8 +43,10 @@
 //   don't wait: call WaitSiftBatch() first.
 // - ExtractSift without tempMemory allocates its temporary memory in each call, and in a
 //   batch frees it only when the batch completes: pass tempMemory in batches of many calls.
-// - A batch is built by one thread, on one device (the current device at BeginSiftBatch),
-//   and one batch is open at a time. The calls of other threads are not part of it.
+// - A batch is built by one thread. With CUDA, it is on one device (the current device at
+//   BeginSiftBatch), one batch is open at a time, and the calls of other threads are not
+//   part of it. With Metal, other threads must not make CudaSift calls while a batch is
+//   open.
 
 #ifndef CUDASIFTBATCH_H
 #define CUDASIFTBATCH_H

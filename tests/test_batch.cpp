@@ -186,7 +186,7 @@ int main(int argc, char **argv)
   memcpy(HostPoints(b1), HostPoints(a1), sizeof(SiftPoint)*a1.numPts);   // same points in the same order
   memcpy(HostPoints(b2), HostPoints(a2), sizeof(SiftPoint)*a2.numPts);
 #ifndef MANAGEDMEM
-  if (b1.h_data!=b1.d_data) {   // separate device memory
+  if (b1.h_data!=b1.d_data) {   // CUDA: separate device memory (with Metal, the same memory)
     cudaMemcpy(b1.d_data, b1.h_data, sizeof(SiftPoint)*a1.numPts, cudaMemcpyHostToDevice);
     cudaMemcpy(b2.d_data, b2.h_data, sizeof(SiftPoint)*a2.numPts, cudaMemcpyHostToDevice);
   }
@@ -231,7 +231,8 @@ int main(int argc, char **argv)
     FreeSiftData(big);
   }
 
-  std::cout << "\n--- Test: Calls of another thread while a batch is open ---" << std::endl;
+#ifdef __CUDACC__
+  std::cout << "\n--- Test: Calls of another thread while a batch is open (CUDA) ---" << std::endl;
   {
     // The calls of other threads are not part of the batch: they return valid results
     SiftData c1;
@@ -248,6 +249,7 @@ int main(int argc, char **argv)
     CHECK(Identical(a1, b1, false), "The batch's extraction is unaffected");
     FreeSiftData(c1);
   }
+#endif
 
   std::cout << "\n--- Test: Frame loop (extract a 1080p frame, match it with the previous one) ---" << std::endl;
   CudaImage frames[2];

@@ -28,7 +28,7 @@ echo "============================================="
 
 # Run the tests that were built (not every configuration builds all of them)
 FAILED=""
-for TEST in test_extract test_match test_homography test_homography_gpu; do
+for TEST in test_extract test_match test_homography test_homography_gpu test_batch; do
   if [ -x "${BIN_DIR}/${TEST}" ]; then
     echo ""
     echo ">>> Running ${TEST}..."
