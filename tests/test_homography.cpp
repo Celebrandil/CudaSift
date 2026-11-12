@@ -4,12 +4,16 @@
 
 #include <iostream>
 #include <cmath>
+#include <algorithm>
+#include <cstring>
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 
 #include "cudaImage.h"
 #include "cudaSift.h"
+#include <vector>
+#include <cuda_runtime.h>
 
 int ImproveHomography(SiftData &data, float *homography, int numLoops, float minScore, float maxAmbiguity, float thresh);
 
@@ -181,6 +185,134 @@ void TestScale()
   FreeSiftData(siftData2);
 }
 
+// Regression test: TestHomographies also tested the padding of the
+// coordinate arrays (rounded up to a multiple of 16), so numMatches could exceed numPts.
+// The padding is never written: it is fresh memory (zeros) or, with the memory released
+// just before, 100.0f values. Both give (x,y)->(x,y) pairs, inliers of the identity.
+void TestHomographyPadding()
+{
+  std::cout << "\n--- Test: Homography inliers with numPts not a multiple of 16 ---" << std::endl;
+
+  const int numPts = 20, numPtsUp = 32;
+  float *prime = NULL;
+  std::vector<float> hundreds(4*numPtsUp, 100.0f);
+  cudaMalloc((void **)&prime, sizeof(float)*4*numPtsUp);   // same size as FindHomography's coordinates
+  cudaMemcpy(prime, hundreds.data(), sizeof(float)*4*numPtsUp, cudaMemcpyHostToDevice);
+  cudaFree(prime);
+
+  SiftData data;
+  InitSiftData(data, numPts, true, true);
+#ifdef MANAGEDMEM
+  SiftPoint *pts = data.m_data;
+#else
+  SiftPoint *pts = data.h_data;
+#endif
+  for (int i = 0; i < numPts; i++) {
+    SiftPoint &pt = pts[i];
+    pt.xpos = pt.match_xpos = 50.0f + 37.0f*(i%5) + 3.0f*i;   // perfect matches under the identity
+    pt.ypos = pt.match_ypos = 40.0f + 29.0f*(i/5) + 2.0f*(i%3);
+    pt.score = 1.0f;
+    pt.ambiguity = 0.0f;
+  }
+  data.numPts = numPts;
+#ifndef MANAGEDMEM
+  cudaMemcpy(data.d_data, data.h_data, sizeof(SiftPoint)*numPts, cudaMemcpyHostToDevice);
+#endif
+
+  srand(1);
+  float homography[9];
+  int numMatches = 0;
+  FindHomography(data, homography, &numMatches, 1024, 0.0f, 0.8f, 3.0f);
+  std::cout << "    " << numPts << " points, " << numMatches << " matches" << std::endl;
+  CHECK(numMatches == numPts, "numMatches == numPts for perfect matches");
+
+  FreeSiftData(data);
+}
+
+// Regression test: TestHomographies counted the inliers among all the points, not only
+// among those FindHomography samples from (score > minScore, ambiguity < maxAmbiguity).
+// 20 valid matches under the identity, 10 valid matches under a translation, and 40
+// ambiguous matches under the same translation: the translation won with 50 inliers.
+void TestHomographyValidOnly()
+{
+  std::cout << "\n--- Test: Homography inliers among the valid matches only ---" << std::endl;
+
+  const int numIdentity = 20, numShifted = 10, numAmbiguous = 40;
+  const int numPts = numIdentity + numShifted + numAmbiguous;
+  const float dx = 30.0f, dy = 20.0f;
+  SiftData data;
+  InitSiftData(data, numPts, true, true);
+#ifdef MANAGEDMEM
+  SiftPoint *pts = data.m_data;
+#else
+  SiftPoint *pts = data.h_data;
+#endif
+  for (int i = 0; i < numPts; i++) {
+    SiftPoint &pt = pts[i];
+    pt.xpos = 50.0f + 37.0f*(i%7) + 3.0f*(i/7);
+    pt.ypos = 40.0f + 29.0f*(i/7) + 2.0f*(i%3);
+    bool shifted = (i >= numIdentity);
+    pt.match_xpos = pt.xpos + (shifted ? dx : 0.0f);
+    pt.match_ypos = pt.ypos + (shifted ? dy : 0.0f);
+    pt.score = 1.0f;
+    pt.ambiguity = (i < numIdentity + numShifted ? 0.0f : 0.95f);
+  }
+  data.numPts = numPts;
+#ifndef MANAGEDMEM
+  cudaMemcpy(data.d_data, data.h_data, sizeof(SiftPoint)*numPts, cudaMemcpyHostToDevice);
+#endif
+
+  srand(1);
+  float homography[9];
+  int numMatches = 0;
+  FindHomography(data, homography, &numMatches, 1024, 0.0f, 0.8f, 3.0f);
+  std::cout << "    " << numMatches << " matches, translation " << homography[2] << ", " << homography[5] << std::endl;
+  CHECK(numMatches == numIdentity, "numMatches == number of valid identity matches");
+  CHECK(std::fabs(homography[2]) < 1.0f && std::fabs(homography[5]) < 1.0f, "homography is the identity");
+
+  FreeSiftData(data);
+}
+
+// Regression test: FindHomography kept hypotheses from samples whose triangles change
+// orientation between the images, which no camera viewing a plane produces. 20 matches
+// under the identity and 30 under a mirror: the mirror won with 30 inliers.
+void TestHomographyOrientation()
+{
+  std::cout << "\n--- Test: Homography samples with consistent orientation ---" << std::endl;
+
+  const int numIdentity = 20, numMirrored = 30, numPts = numIdentity + numMirrored;
+  SiftData data;
+  InitSiftData(data, numPts, true, true);
+#ifdef MANAGEDMEM
+  SiftPoint *pts = data.m_data;
+#else
+  SiftPoint *pts = data.h_data;
+#endif
+  for (int i = 0; i < numPts; i++) {
+    SiftPoint &pt = pts[i];
+    pt.xpos = 50.0f + 37.0f*(i%7) + 3.0f*(i/7);
+    pt.ypos = 40.0f + 29.0f*(i/7) + 2.0f*(i%3);
+    pt.match_xpos = (i < numIdentity ? pt.xpos : 400.0f - pt.xpos);
+    pt.match_ypos = pt.ypos;
+    pt.score = 1.0f;
+    pt.ambiguity = 0.0f;
+  }
+  data.numPts = numPts;
+#ifndef MANAGEDMEM
+  cudaMemcpy(data.d_data, data.h_data, sizeof(SiftPoint)*numPts, cudaMemcpyHostToDevice);
+#endif
+
+  srand(1);
+  float homography[9];
+  int numMatches = 0;
+  FindHomography(data, homography, &numMatches, 1024, 0.0f, 0.8f, 3.0f);
+  std::cout << "    " << numMatches << " matches, H[0] " << homography[0] << std::endl;
+  CHECK(numMatches == numIdentity, "numMatches == number of identity matches");
+  CHECK(std::fabs(homography[0] - 1.0f) < 0.01f, "homography is the identity, not the mirror");
+
+  FreeSiftData(data);
+}
+
 void TestPGMImages()
 {
   std::cout << "\n--- Test: PGM Image Pair ---" << std::endl;
@@ -229,6 +361,92 @@ void TestPGMImages()
   FreeSiftData(siftData2);
 }
 
+// Regression test: when no match passed the filter, cv::solve
+// failed on the zero matrix and ImproveHomography replaced the homography by zeros
+void TestImproveHomographyNoInliers()
+{
+  std::cout << "\n--- Test: ImproveHomography without usable matches ---" << std::endl;
+
+  const int numPts = 20;
+  SiftData data;
+  InitSiftData(data, numPts, true, true);
+#ifdef MANAGEDMEM
+  SiftPoint *pts = data.m_data;
+#else
+  SiftPoint *pts = data.h_data;
+#endif
+  for (int i = 0; i < numPts; i++) {
+    SiftPoint &pt = pts[i];
+    pt.xpos = pt.match_xpos = 50.0f + 37.0f*(i%5) + 3.0f*i;
+    pt.ypos = pt.match_ypos = 40.0f + 29.0f*(i/5) + 2.0f*(i%3);
+    pt.score = 1.0f;
+    pt.ambiguity = 1.0f;   // all matches rejected by maxAmbiguity = 0.8
+  }
+  data.numPts = numPts;
+
+  float homography[9] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+  ImproveHomography(data, homography, 5, 0.0f, 0.8f, 3.0f);
+  float err = 0.0f;
+  for (int i = 0; i < 9; i++)
+    err = fmaxf(err, fabsf(homography[i] - (i%4==0 ? 1.0f : 0.0f)));
+  std::cout << "    max deviation from the identity: " << err << std::endl;
+  CHECK(err < 1e-6f, "Homography unchanged when no match can refine it");
+
+  FreeSiftData(data);
+}
+
+// Regression test: the managed memory build (MANAGEDMEM) computed the descriptors with another
+// kernel than the default build, summing the histograms with shared memory atomics, so its
+// descriptors changed from run to run. Built in both modes (scripts/check_builds.sh builds this
+// test with USE_MANAGED_MEM=ON): two extractions of the same image give the same points, in any
+// order, and the same descriptors, bit for bit.
+void TestDeterministicDescriptors()
+{
+  std::cout << "\n--- Test: Same descriptors on repeated extractions ---" << std::endl;
+
+  cv::Mat img = cv::imread("data/img1.png", 0);
+  if (img.empty()) return;
+  cv::Mat fimg;
+  img.convertTo(fimg, CV_32FC1);
+  CudaImage cudaImg;
+  cudaImg.Allocate(fimg.cols, fimg.rows, iAlignUp(fimg.cols, 128), false, NULL, (float *)fimg.data);
+  cudaImg.Download();
+
+  SiftData siftData;
+  InitSiftData(siftData, 32768, true, true);
+  float *mem = AllocSiftTempMemory(fimg.cols, fimg.rows, 5, false);
+  std::vector<SiftPoint> runs[2];
+  for (int r = 0; r < 2; r++) {
+    ExtractSift(siftData, cudaImg, 5, 1.0f, 3.0f, 0.0f, false, mem);
+#ifdef MANAGEDMEM
+    SiftPoint *pts = siftData.m_data;
+#else
+    SiftPoint *pts = siftData.h_data;
+#endif
+    runs[r].assign(pts, pts + siftData.numPts);
+    std::sort(runs[r].begin(), runs[r].end(), [](const SiftPoint &a, const SiftPoint &b) {
+      if (a.xpos != b.xpos) return a.xpos < b.xpos;
+      if (a.ypos != b.ypos) return a.ypos < b.ypos;
+      if (a.scale != b.scale) return a.scale < b.scale;
+      if (a.orientation != b.orientation) return a.orientation < b.orientation;
+      return memcmp(a.data, b.data, sizeof(a.data)) < 0;
+    });
+  }
+  FreeSiftTempMemory(mem);
+  FreeSiftData(siftData);
+
+  bool samePoints = (runs[0].size() == runs[1].size() && !runs[0].empty());
+  int sameDescriptors = 0;
+  for (size_t i = 0; samePoints && i < runs[0].size(); i++) {
+    const SiftPoint &a = runs[0][i], &b = runs[1][i];
+    samePoints = (a.xpos == b.xpos && a.ypos == b.ypos && a.scale == b.scale && a.orientation == b.orientation);
+    sameDescriptors += (memcmp(a.data, b.data, sizeof(a.data)) == 0);
+  }
+  std::cout << "    " << runs[0].size() << " points, " << sameDescriptors << " identical descriptors" << std::endl;
+  CHECK(samePoints, "Same points on repeated extractions");
+  CHECK(samePoints && sameDescriptors == (int)runs[0].size(), "Same descriptors on repeated extractions");
+}
+
 int main(int argc, char **argv)
 {
   int devNum = 0;
@@ -243,7 +461,12 @@ int main(int argc, char **argv)
   TestTranslation();
   TestRotation();
   TestScale();
+  TestHomographyPadding();
+  TestHomographyValidOnly();
+  TestHomographyOrientation();
   TestPGMImages();
+  TestImproveHomographyNoInliers();
+  TestDeterministicDescriptors();
 
   std::cout << "\n=============================================" << std::endl;
   std::cout << "  Results: " << testsPassed << " passed, " << testsFailed << " failed" << std::endl;
