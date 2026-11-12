@@ -17,6 +17,8 @@ public:
 public:
   CudaImage();
   ~CudaImage();
+  CudaImage(const CudaImage &) = delete;              // the destructor frees the data,
+  CudaImage &operator=(const CudaImage &) = delete;   // so copies would free it twice
   void Allocate(int width, int height, int pitch, bool withHost, float *devMem = NULL, float *hostMem = NULL);
   double Download();
   double Readback();

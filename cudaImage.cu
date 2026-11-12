@@ -14,6 +14,14 @@ int iAlignDown(int a, int b) { return a - a%b; }
 
 void CudaImage::Allocate(int w, int h, int p, bool host, float *devmem, float *hostmem) 
 {
+  if (d_internalAlloc && d_data!=NULL)   // free the data of a previous Allocate
+    safeCall(cudaFree(d_data));
+  if (h_internalAlloc && h_data!=NULL)
+    free(h_data);
+  if (t_data!=NULL)
+    safeCall(cudaFreeArray((cudaArray *)t_data));
+  d_internalAlloc = false;
+  h_internalAlloc = false;
   width = w;
   height = h; 
   pitch = p; 
@@ -21,8 +29,9 @@ void CudaImage::Allocate(int w, int h, int p, bool host, float *devmem, float *h
   h_data = hostmem; 
   t_data = NULL; 
   if (devmem==NULL) {
-    safeCall(cudaMallocPitch((void **)&d_data, (size_t*)&pitch, (size_t)(sizeof(float)*width), (size_t)height));
-    pitch /= sizeof(float);
+    size_t pitchBytes;
+    safeCall(cudaMallocPitch((void **)&d_data, &pitchBytes, (size_t)(sizeof(float)*width), (size_t)height));
+    pitch = (int)(pitchBytes/sizeof(float));
     if (d_data==NULL) 
       printf("Failed to allocate device data\n");
     d_internalAlloc = true;
@@ -102,10 +111,10 @@ double CudaImage::CopyToTexture(CudaImage &dst, bool host)
     return 0.0;
   }
   TimerGPU timer(0);
-  if (host)
-    safeCall(cudaMemcpyToArray((cudaArray *)dst.t_data, 0, 0, h_data, sizeof(float)*pitch*dst.height, cudaMemcpyHostToDevice));
+  if (host)   // h_data rows are width floats (see Download)
+    safeCall(cudaMemcpy2DToArray((cudaArray *)dst.t_data, 0, 0, h_data, sizeof(float)*width, sizeof(float)*width, dst.height, cudaMemcpyHostToDevice));
   else
-    safeCall(cudaMemcpyToArray((cudaArray *)dst.t_data, 0, 0, d_data, sizeof(float)*pitch*dst.height, cudaMemcpyDeviceToDevice));
+    safeCall(cudaMemcpy2DToArray((cudaArray *)dst.t_data, 0, 0, d_data, sizeof(float)*pitch, sizeof(float)*pitch, dst.height, cudaMemcpyDeviceToDevice));
   safeCall(cudaDeviceSynchronize());
   double gpuTime = timer.read();
 #ifdef VERBOSE

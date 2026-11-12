@@ -15,13 +15,14 @@ int ImproveHomography(SiftData &data, float *homography, int numLoops, float min
   float limit = thresh*thresh;
   int numPts = data.numPts;
   cv::Mat M(8, 8, CV_64FC1);
-  cv::Mat A(8, 1, CV_64FC1), X(8, 1, CV_64FC1);
+  cv::Mat A(8, 1, CV_64FC1), X(8, 1, CV_64FC1), B(8, 1, CV_64FC1);
   double Y[8];
   for (int i=0;i<8;i++) 
     A.at<double>(i, 0) = homography[i] / homography[8];
   for (int loop=0;loop<numLoops;loop++) {
     M = cv::Scalar(0.0);
     X = cv::Scalar(0.0);
+    int numInliers = 0;
     for (int i=0;i<numPts;i++) {
       SiftPoint &pt = mpts[i];
       if (pt.score<minScore || pt.ambiguity>maxAmbiguity)
@@ -31,6 +32,7 @@ int ImproveHomography(SiftData &data, float *homography, int numLoops, float min
       float dy = (A.at<double>(3)*pt.xpos + A.at<double>(4)*pt.ypos + A.at<double>(5)) / den - pt.match_ypos;
       float err = dx*dx + dy*dy;
       float wei = (err<limit ? 1.0f : 0.0f); //limit / (err + limit);
+      numInliers += (err<limit);
       Y[0] = pt.xpos;
       Y[1] = pt.ypos;
       Y[2] = 1.0;
@@ -52,7 +54,11 @@ int ImproveHomography(SiftData &data, float *homography, int numLoops, float min
           M.at<double>(r,c) += (Y[c] * Y[r] * wei);
       X += (cv::Mat(8,1,CV_64FC1,Y) * pt.match_ypos * wei);
     }
-    cv::solve(M, X, A, cv::DECOMP_CHOLESKY);
+    // With fewer than 4 inliers, M is singular: keep the previous estimate, since
+    // cv::solve sets the solution to zero if it fails
+    if (numInliers<4 || !cv::solve(M, X, B, cv::DECOMP_CHOLESKY))
+      break;
+    B.copyTo(A);
   }
   int numfit = 0;
   for (int i=0;i<numPts;i++) {
